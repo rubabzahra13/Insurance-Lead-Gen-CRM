@@ -10,11 +10,8 @@ config({
 });
 
 import { runLeadPipeline } from './pipeline.js';
-import { appendLeadsToSheet, isSheetsConfigured } from './sheets.js';
 import { writeLeadsToXlsx } from './xlsx.js';
-import { parseSearchPrompt, sleep } from './utils.js';
-import { initDb } from './db/index.js';
-import { persistPipelineToKb } from './db/persist-run.js';
+import { parseSearchPrompt } from './utils.js';
 
 function printUsage() {
   console.log(`Usage:
@@ -79,29 +76,8 @@ async function main() {
     `Limits: max ${process.env.MAX_RESULTS ?? 25} leads, resolve up to ${process.env.LINK_RESOLVE_MAX_TARGETS ?? process.env.MAX_RESULTS ?? 25} missing links\n`,
   );
 
-  const startedAt = new Date().toISOString();
   const { leads, rejected, trace, stats } = await runLeadPipeline(searchPrompt);
-  const finishedAt = new Date().toISOString();
   printTrace(trace);
-
-  if (process.env.DATABASE_URL || process.env.SUPABASE_POOLER_URL) {
-    try {
-      await initDb();
-      const kb = await persistPipelineToKb({
-        query: rawInput,
-        searchPrompt,
-        maxResults: Number(process.env.MAX_RESULTS ?? 25),
-        result: { leads, rejected, trace, stats },
-        startedAt,
-        finishedAt,
-      });
-      console.log(
-        `KB: ${kb.leadsAdded} lead(s) added, ${kb.duplicatesFound} duplicate(s) flagged (run ${kb.runId})\n`,
-      );
-    } catch (err) {
-      console.warn(`KB save skipped: ${err.message}\n`);
-    }
-  }
 
   if (leads.length === 0) {
     console.log(`No leads passed quality gate (min confidence ${process.env.MIN_CONFIDENCE ?? 0.55}).`);
@@ -131,17 +107,11 @@ async function main() {
     console.log(`${rejected.length} low-confidence candidate(s) saved to output/rejected-leads.json\n`);
   }
 
-  if (isSheetsConfigured()) {
-    await sleep(2000);
-    const result = await appendLeadsToSheet(leads);
-    console.log(`Saved ${result.count} row(s) to Google Sheet (${result.sheetName}).`);
-  } else {
-    const xlsxPath = process.env.OUTPUT_XLSX ?? './output/leads.xlsx';
-    const result = writeLeadsToXlsx(leads, xlsxPath);
-    console.log(
-      `Saved ${result.count} lead(s) to ${result.filePath} (${result.total} unique rows total after dedupe)`,
-    );
-  }
+  const xlsxPath = process.env.OUTPUT_XLSX ?? './output/leads.xlsx';
+  const result = writeLeadsToXlsx(leads, xlsxPath);
+  console.log(
+    `Saved ${result.count} lead(s) to ${result.filePath} (${result.total} unique rows total after dedupe)`,
+  );
 }
 
 main().catch((error) => {
