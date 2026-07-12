@@ -22,6 +22,11 @@ peters-pipeline/
             ├── 001_avatar3_tables.py
             └── run.py
 ```
+# Project Architecture:
+Frontend: Next.js 14 (React 18) at frontend/ — built with next build, served via next start
+Backend: FastAPI (Python) at backend/app/ served by uvicorn on port 8000, with a legacy Node.js scraper at backend/src/ on port 3001
+Database: Supabase (PostgreSQL via SQLAlchemy)
+Default branch: Insurance-9-July
 
 ## Environment Variables
 
