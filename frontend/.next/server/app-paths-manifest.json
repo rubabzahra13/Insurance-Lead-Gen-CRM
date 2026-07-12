@@ -1,6 +1,0 @@
-{
-  "/landing-page/[leadId]/page": "app/landing-page/[leadId]/page.js",
-  "/(dashboard)/business/page": "app/(dashboard)/business/page.js",
-  "/(dashboard)/recruitment/page": "app/(dashboard)/recruitment/page.js",
-  "/(dashboard)/page": "app/(dashboard)/page.js"
-}
