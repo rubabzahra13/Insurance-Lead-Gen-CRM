@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi import Query
+from pydantic import BaseModel
+from sqlalchemy import desc, select
+from sqlalchemy.orm import Session, selectinload
+
+from app.models.avatar12 import AvatarLead, AvatarType
+from app.session import SessionLocal
+from app.services.avatar12_drafts import (
+    persist_avatar12_lead,
+    latest_avatar12_draft,
+    list_avatar12_leads as service_list_avatar12_leads,
+    mark_avatar12_draft_sent,
+)
+
+
+router = APIRouter(prefix="/api/avatar12", tags=["avatar12"])
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+class AvatarLeadCreate(BaseModel):
+    avatar_type: AvatarType
+    name: str
+    headline: str | None = None
+    role: str | None = None
+    company: str | None = None
+    past_experience: str | None = None
+    location: str | None = None
+    linkedin_url: str | None = None
+    search_prompt: str | None = None
+    source_snapshot: str | None = None
+    source_query: str | None = None
+
+
+def _lead_payload(lead: AvatarLead) -> dict:
+    return {
+        "id": str(lead.id),
+        "avatar_type": lead.avatar_type.value if lead.avatar_type else None,
+        "name": lead.name,
+        "headline": lead.headline,
+        "role": lead.role,
+        "company": lead.company,
+        "past_experience": lead.past_experience,
+        "location": lead.location,
+        "linkedin_url": lead.linkedin_url,
+        "search_prompt": lead.search_prompt,
+        "source_snapshot": lead.source_snapshot,
+        "source_query": lead.source_query,
+        "created_at": lead.created_at,
+        "updated_at": lead.updated_at,
+    }
+
+
+def _draft_payload(draft) -> dict:
+    return {
+        "id": str(draft.id),
+        "avatar12_lead_id": str(draft.avatar12_lead_id),
+        "status": draft.status,
+        "message": draft.message,
+        "reasoning": draft.reasoning,
+        "created_at": draft.created_at,
+    }
+
+
+class SendMessageRequest(BaseModel):
+    channel: str | None = None
+    note: str | None = None
+    message: str | None = None
+
+
+@router.get("/leads")
+def list_leads(
+    avatar_type: AvatarType | None = Query(default=None),
+    source_query: str | None = Query(default=None),
+    db: Session = Depends(get_db)
+):
+    return {"items": service_list_avatar12_leads(db=db, avatar_type=avatar_type, source_query=source_query)}
+
+
+@router.post("/leads")
+def create_lead(payload: AvatarLeadCreate, db: Session = Depends(get_db)):
+    result = persist_avatar12_lead(
+        db=db,
+        avatar_type=payload.avatar_type,
+        name=payload.name,
+        headline=payload.headline,
+        role=payload.role,
+        company=payload.company,
+        past_experience=payload.past_experience,
+        location=payload.location,
+        linkedin_url=payload.linkedin_url,
+        search_prompt=payload.search_prompt,
+        source_snapshot=payload.source_snapshot,
+        source_query=payload.source_query or payload.search_prompt,
+    )
+    return result
+
+
+@router.get("/leads/{lead_id}")
+def get_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+    lead = db.scalar(
+        select(AvatarLead)
+        .where(AvatarLead.id == lead_id)
+        .options(selectinload(AvatarLead.drafts))
+    )
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    return {
+        **_lead_payload(lead),
+        "drafts": [_draft_payload(draft) for draft in lead.drafts],
+    }
+
+
+@router.get("/leads/{lead_id}/drafts/latest")
+def get_latest_draft(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+    draft = latest_avatar12_draft(db=db, lead_id=lead_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return _draft_payload(draft)
+
+
+@router.post("/leads/{lead_id}/messages/send")
+def send_message(lead_id: uuid.UUID, payload: SendMessageRequest, db: Session = Depends(get_db)):
+    result = mark_avatar12_draft_sent(
+        db=db,
+        lead_id=lead_id,
+        channel=payload.channel,
+        message=payload.message,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return result
+
+
+@router.delete("/leads/{lead_id}")
+def delete_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+    lead = db.scalar(select(AvatarLead).where(AvatarLead.id == lead_id))
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    db.delete(lead)
+    db.commit()
+    return {"ok": True, "message": f"Lead {lead_id} successfully deleted"}
+
