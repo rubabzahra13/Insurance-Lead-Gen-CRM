@@ -285,7 +285,8 @@ export default function HomePage() {
   // Poll Job Status (Fallback / Backup Poller)
   const pollJobStatus = async (runId) => {
     try {
-      const pollRes = await fetch(`http://localhost:3001/api/scrape/${runId}`);
+      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+      const pollRes = await fetch(`${apiBaseUrl}/api/scrape/${runId}`);
       if (!pollRes.ok) return false;
       const job = await pollRes.json();
 
@@ -305,7 +306,7 @@ export default function HomePage() {
         }
         newLogs.push(
           `[STEP] Starting Stage 2: Sourcing recruitment candidates (LinkedIn Scraper Engine)...`,
-          `[LOG] Submitting scrape trigger request to port 3001...`,
+          `[LOG] Submitting scrape trigger request to shared backend...`,
           `[LOG] Scraper job created: ${runId}`
         );
 
@@ -353,14 +354,15 @@ export default function HomePage() {
 
   // Run Avatar 1/2 (LinkedIn scraping SSE pipeline)
   const runRecruitmentScraper = async (query, avatarType) => {
+    const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
     setScrapingLogs(prev => [
       ...prev,
       `[STEP] Starting Stage 2: Sourcing recruitment candidates (LinkedIn Scraper Engine)...`,
-      `[LOG] Submitting scrape trigger request to port 3001...`,
+      `[LOG] Submitting scrape trigger request to shared backend...`,
     ]);
 
     try {
-      const triggerRes = await fetch('http://localhost:3001/api/scrape', {
+      const triggerRes = await fetch(`${apiBaseUrl}/api/scrape`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, maxResults: 10 }),
@@ -380,7 +382,7 @@ export default function HomePage() {
       ]);
 
       // Open SSE stream
-      const eventSource = new EventSource(`http://localhost:3001/api/scrape/${runId}/stream`);
+      const eventSource = new EventSource(`${apiBaseUrl}/api/scrape/${runId}/stream`);
 
       eventSource.onmessage = (event) => {
         try {

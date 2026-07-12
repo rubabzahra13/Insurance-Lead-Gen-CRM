@@ -8,6 +8,7 @@ from app.routes.avatar3_tools import router as avatar3_tools_router
 from app.routes.classify_search import router as classify_search_router
 from app.routes.dashboard import router as dashboard_router
 from app.routes.funnel_events import router as funnel_events_router
+from app.routes.scrape import router as scrape_router
 from app.routes.avatar12_leads import router as avatar12_router
 from app.routes.avatar3_leads import router as avatar3_router
 
@@ -36,6 +37,7 @@ app.include_router(avatar3_tools_router)
 app.include_router(classify_search_router)
 app.include_router(dashboard_router)
 app.include_router(funnel_events_router)
+app.include_router(scrape_router)
 
 
 @app.get("/api/health")
