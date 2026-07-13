@@ -29,7 +29,9 @@ def _avatar_prompt(avatar_type: AvatarType) -> str:
             "learn more or book a quick call via the link. The link must appear as a full URL on its own line so it's clearly visible.\n"
             "- End with a clear, natural sign-off (e.g. 'Best regards,' or 'Looking forward to connecting,' followed by a name like 'Peter' or 'The InsureLead Team').\n"
             "- Keep the tone warm, human, and direct. This is the entire message body — not a subject line.\n"
-            "Return only a single JSON object with exactly two string keys: draft_message and reasoning."
+            "Return only a single JSON object with exactly two string keys: draft_message and reasoning.\n"
+            "For reasoning, summarize what we learned about this person from their profile (background, role, and why they fit this lead type). "
+            "Use plain sentences. Do not use em dashes."
         )
 
     return (
@@ -42,7 +44,9 @@ def _avatar_prompt(avatar_type: AvatarType) -> str:
         "learn more or book a quick call via the link. The link must appear as a full URL on its own line so it's clearly visible.\n"
         "- End with a clear, natural sign-off (e.g. 'Best regards,' or 'Looking forward to connecting,' followed by a name like 'Peter' or 'The InsureLead Team').\n"
         "- Keep the tone warm, human, and direct. This is the entire message body — not a subject line.\n"
-        "Return only a single JSON object with exactly two string keys: draft_message and reasoning."
+        "Return only a single JSON object with exactly two string keys: draft_message and reasoning.\n"
+        "For reasoning, summarize what we learned about this person from their profile (background, role, and why they fit this lead type). "
+        "Use plain sentences. Do not use em dashes."
     )
 
 
@@ -75,7 +79,7 @@ def _lead_prompt_context(
         f"Location: {location or ''}\n"
         f"Past experience: {past_experience or ''}\n"
         f"Landing page URL to include in the email body: {landing_page_url or 'N/A'}\n"
-        "Write the outreach draft email and explain your reasoning.\n"
+        "Write the outreach draft email and explain what we learned about this person from their profile.\n"
         "The greeting MUST use the lead's real first name, not a placeholder.\n"
         "The landing page URL MUST appear in the draft as a full clickable URL.\n"
         "The draft should sound different for Avatar 1 versus Avatar 2, and should clearly reflect the lead's background.\n"

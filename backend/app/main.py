@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
 
@@ -26,7 +28,16 @@ origins = [
 if public_app_url not in origins:
     origins.append(public_app_url)
 
-app = FastAPI(title="LeadGen API")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    yield
+    from app.routes.scrape import shutdown_scrape_jobs
+
+    await shutdown_scrape_jobs()
+
+
+app = FastAPI(title="LeadGen API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,

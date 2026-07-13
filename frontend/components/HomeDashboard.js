@@ -14,10 +14,11 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { AlertTriangle, ArrowRight, Building2, Search, Users } from 'lucide-react';
-import { AVATAR_LABELS, LEAD_PATH, pipelineStageLabel, WORKSPACE_LABELS } from '../lib/avatar-labels';
+import { AlertTriangle, ArrowRight, Building2, Star, Users } from 'lucide-react';
+import { AVATAR_LABELS, LEAD_PATH, pipelineStageLabel } from '../lib/avatar-labels';
 import { DASHBOARD_REFRESH_EVENT } from '../lib/dashboard-events';
 import { BUSINESS_COLORS, COLORS, INDIVIDUAL_COLORS, RGBA } from '../lib/colors';
+import { useIndividualSegment } from '../context/IndividualSegmentContext';
 
 const INDIVIDUAL_CHART_COLORS = {
   [AVATAR_LABELS.avatar1]: INDIVIDUAL_COLORS.avatar1,
@@ -34,11 +35,53 @@ function ChartTooltip({ active, payload, label }) {
   );
 }
 
+/** Role classifiers for individual leads (role text is free-form from LinkedIn). */
+const LICENSED_ROLE_RE = /agent|broker|licensed|underwrit|adjuster|claims/i;
+const DECISION_MAKER_RE = /ceo|chief|founder|owner|president|principal|partner|director|\bvp\b|vice president|head|manager/i;
+
+function MetricCard({ href, icon, iconBg, iconColor, title, desc, kpis }) {
+  return (
+    <article className="dash-metric-card">
+      <Link href={href} className="dash-workflow-card__header dash-workflow-card__header--link">
+        <div className="dash-workflow-card__icon" style={{ background: iconBg, color: iconColor }}>
+          {icon}
+        </div>
+        <div className="dash-workflow-card__intro">
+          <h3 className="dash-workflow-card__title">{title}</h3>
+          <p className="dash-workflow-card__desc">{desc}</p>
+        </div>
+        <ArrowRight size={16} className="dash-workflow-card__arrow" />
+      </Link>
+
+      <div className="dash-kpi-row">
+        {kpis.map((kpi) => (
+          <div key={kpi.label} className="dash-kpi">
+            <span className="dash-kpi__value">{kpi.value}</span>
+            <span className="dash-kpi__label">{kpi.label}</span>
+            {kpi.hint ? <span className="dash-kpi__hint">{kpi.hint}</span> : null}
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+async function fetchWithTimeout(url, ms = 10000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export default function HomeDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [individualLeads, setIndividualLeads] = useState([]);
   const [businessLeads, setBusinessLeads] = useState([]);
+  const { setSegmentCounts } = useIndividualSegment();
 
   useEffect(() => {
     const load = async () => {
@@ -47,14 +90,19 @@ export default function HomeDashboard() {
       try {
         const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
         const [individualsRes, businessRes] = await Promise.all([
-          fetch(`${apiBaseUrl}/api/avatar12/leads`),
-          fetch(`${apiBaseUrl}/api/avatar3/leads`),
+          fetchWithTimeout(`${apiBaseUrl}/api/avatar12/leads`),
+          fetchWithTimeout(`${apiBaseUrl}/api/avatar3/leads`),
         ]);
         if (!individualsRes.ok || !businessRes.ok) throw new Error('Dashboard fetch failed');
         const individualsData = await individualsRes.json();
         const businessData = await businessRes.json();
         setIndividualLeads(individualsData.items || []);
         setBusinessLeads(businessData.items || []);
+        const items = individualsData.items || [];
+        setSegmentCounts({
+          avatar1: items.filter((lead) => lead.avatar_type === 'avatar1').length,
+          avatar2: items.filter((lead) => lead.avatar_type === 'avatar2').length,
+        });
       } catch (err) {
         console.error(err);
         setError(true);
@@ -67,7 +115,7 @@ export default function HomeDashboard() {
     const onRefresh = () => load();
     window.addEventListener(DASHBOARD_REFRESH_EVENT, onRefresh);
     return () => window.removeEventListener(DASHBOARD_REFRESH_EVENT, onRefresh);
-  }, []);
+  }, [setSegmentCounts]);
 
   const individualChart = useMemo(() => {
     const jobSeekers = individualLeads.filter((l) => l.avatar_type === 'avatar1').length;
@@ -96,12 +144,40 @@ export default function HomeDashboard() {
   const totalIndividuals = individualChart.reduce((sum, row) => sum + row.value, 0);
   const totalBusinesses = businessChart.reduce((sum, row) => sum + row.value, 0);
 
+  const businessStats = useMemo(() => {
+    const newLeads = businessLeads.filter((l) => (l.pipeline_stage || 'new') === 'new').length;
+    return { newLeads };
+  }, [businessLeads]);
+
+  // Role composition of the sourced individuals (who did we actually find?).
+  const individualRoles = useMemo(() => {
+    const roleOf = (l) => l.role || '';
+    const licensed = individualLeads.filter((l) => LICENSED_ROLE_RE.test(roleOf(l))).length;
+    const decisionMakers = individualLeads.filter((l) => DECISION_MAKER_RE.test(roleOf(l))).length;
+    const companies = new Set(
+      individualLeads.map((l) => (l.company || '').trim().toLowerCase()).filter(Boolean)
+    ).size;
+    return { licensed, decisionMakers, companies };
+  }, [individualLeads]);
+
+  // Quality signals on the sourced businesses.
+  const businessMetrics = useMemo(() => {
+    const rated = businessLeads
+      .map((l) => parseFloat(l.rating))
+      .filter((n) => !Number.isNaN(n));
+    const avgRating = rated.length ? rated.reduce((sum, n) => sum + n, 0) / rated.length : null;
+    const enriched = businessLeads.filter(
+      (l) => l.website || l.contact_email || l.contact_linkedin || l.phone
+    ).length;
+    return { avgRating, enriched };
+  }, [businessLeads]);
+
   if (loading) {
     return (
       <section className="home-dashboard">
-        <div className="dash-summary-row">
-          <div className="dash-summary-card skeleton-shimmer" style={{ height: 88 }} />
-          <div className="dash-summary-card skeleton-shimmer" style={{ height: 88 }} />
+        <div className="dash-launch-row">
+          <div className="dash-launch-panel skeleton-shimmer" style={{ height: 140 }} />
+          <div className="dash-launch-panel skeleton-shimmer" style={{ height: 140 }} />
         </div>
         <div className="dash-charts-grid">
           <div className="dash-chart-card skeleton-shimmer" style={{ height: 320 }} />
@@ -113,78 +189,56 @@ export default function HomeDashboard() {
 
   return (
     <section className="home-dashboard">
-      <header className="dash-page-header">
-        <div>
-          <h2 className="dash-page-title">Overview</h2>
-          <p className="dash-page-subtitle">
-            Track both pipelines at a glance. Source new leads from each workspace.
-          </p>
-        </div>
-      </header>
-
       {error && (
         <div className="dash-error-banner">
           <AlertTriangle size={16} />
-          <span>Could not load dashboard data. Search and sourcing still work.</span>
+          <span>Could not load dashboard data. Make sure the API is running on port 8000, then refresh.</span>
+          <button type="button" className="chip-fallback-btn" onClick={() => window.location.reload()}>
+            Retry
+          </button>
         </div>
       )}
 
-      <div className="dash-summary-row">
-        <Link href="/recruitment" className="dash-summary-card dash-summary-card-link">
-          <div className="dash-summary-icon" style={{ background: 'var(--accent-primary-subtle)', color: COLORS.oldRose }}>
-            <Users size={20} />
-          </div>
-          <div>
-            <p className="dash-summary-label">{WORKSPACE_LABELS.individuals.title}</p>
-            <p className="dash-summary-value">{totalIndividuals}</p>
-            <p className="dash-summary-meta">{LEAD_PATH.people.label}</p>
-          </div>
-          <ArrowRight size={16} className="dash-summary-arrow" />
-        </Link>
+      <div className="dash-workflow-row">
+        <MetricCard
+          href="/recruitment"
+          icon={<Users size={18} />}
+          iconBg="var(--accent-primary-subtle)"
+          iconColor={COLORS.oldRose}
+          title="Individual outreach"
+          desc="LinkedIn profiles → AI drafts → email/SMS"
+          kpis={[
+            { label: 'Licensed agents', value: individualRoles.licensed, hint: 'agents & brokers' },
+            { label: 'Decision-makers', value: individualRoles.decisionMakers, hint: 'owners, partners, directors' },
+            { label: 'Companies', value: individualRoles.companies, hint: 'distinct employers' },
+          ]}
+        />
 
-        <Link href="/business" className="dash-summary-card dash-summary-card-link">
-          <div className="dash-summary-icon" style={{ background: 'var(--bg-secondary)', color: COLORS.text }}>
-            <Building2 size={20} />
-          </div>
-          <div>
-            <p className="dash-summary-label">{WORKSPACE_LABELS.businesses.title}</p>
-            <p className="dash-summary-value">{totalBusinesses}</p>
-            <p className="dash-summary-meta">{LEAD_PATH.business.label}</p>
-          </div>
-          <ArrowRight size={16} className="dash-summary-arrow" />
-        </Link>
-      </div>
-
-      <div className="workspace-hub">
-        <Link href="/recruitment" className="workspace-hub-card workspace-hub-card--individual">
-          <div className="workspace-hub-icon" style={{ background: 'var(--accent-primary-subtle)', color: COLORS.oldRose }}>
-            <Search size={22} />
-          </div>
-          <div className="workspace-hub-body">
-            <p className="workspace-hub-eyebrow">{WORKSPACE_LABELS.individuals.nav}</p>
-            <h3 className="workspace-hub-title">Source {WORKSPACE_LABELS.individuals.title.toLowerCase()}</h3>
-            <p className="workspace-hub-desc">{LEAD_PATH.people.description}</p>
-          </div>
-          <span className="workspace-hub-cta">
-            Open workspace
-            <ArrowRight size={16} />
-          </span>
-        </Link>
-
-        <Link href="/business" className="workspace-hub-card workspace-hub-card--business">
-          <div className="workspace-hub-icon" style={{ background: 'var(--bg-secondary)', color: COLORS.text }}>
-            <Search size={22} />
-          </div>
-          <div className="workspace-hub-body">
-            <p className="workspace-hub-eyebrow">{WORKSPACE_LABELS.businesses.nav}</p>
-            <h3 className="workspace-hub-title">Source {WORKSPACE_LABELS.businesses.title.toLowerCase()}</h3>
-            <p className="workspace-hub-desc">{LEAD_PATH.business.description}</p>
-          </div>
-          <span className="workspace-hub-cta">
-            Open workspace
-            <ArrowRight size={16} />
-          </span>
-        </Link>
+        <MetricCard
+          href="/business"
+          icon={<Building2 size={18} />}
+          iconBg="var(--bg-secondary)"
+          iconColor={COLORS.text}
+          title="Business pipeline"
+          desc="Google Places → kanban stages → follow-ups"
+          kpis={[
+            {
+              label: 'Avg rating',
+              value:
+                businessMetrics.avgRating != null ? (
+                  <span className="dash-kpi__rating">
+                    {businessMetrics.avgRating.toFixed(1)}
+                    <Star className="dash-kpi__star" fill="currentColor" strokeWidth={0} aria-hidden="true" />
+                  </span>
+                ) : (
+                  '—'
+                ),
+              hint: 'Google score',
+            },
+            { label: 'Enriched', value: businessMetrics.enriched, hint: 'website or contact found' },
+            { label: 'New leads', value: businessStats.newLeads, hint: 'on the board' },
+          ]}
+        />
       </div>
 
       <div className="dash-charts-grid">

@@ -4,6 +4,8 @@
 .env.*.local
 
 node_modules/
+.next/
+.dev-session.json
 dist/
 output/
 data/

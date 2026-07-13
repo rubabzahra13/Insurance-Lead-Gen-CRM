@@ -21,13 +21,13 @@ export const LEAD_PATH = {
 
 export const WORKSPACE_LABELS = {
   individuals: {
-    nav: 'Individuals',
+    nav: 'Individual Leads',
     title: 'Individual Leads',
     board: 'Individual Leads Board',
     description: LEAD_PATH.people.description,
   },
   businesses: {
-    nav: 'Businesses',
+    nav: 'Business Leads',
     title: 'Business Leads',
     board: 'Business Pipeline Board',
     description: LEAD_PATH.business.description,
@@ -38,6 +38,12 @@ export function individualLabel(avatarType) {
   if (avatarType === 'avatar1') return AVATAR_LABELS.avatar1;
   if (avatarType === 'avatar2') return AVATAR_LABELS.avatar2;
   return 'Individual leads';
+}
+
+export function individualShortLabel(avatarType) {
+  if (avatarType === 'avatar1') return 'Job seekers';
+  if (avatarType === 'avatar2') return 'Job upgraders';
+  return 'Individual';
 }
 
 export function leadPathLabel(avatarType) {

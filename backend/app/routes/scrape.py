@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,13 @@ _root_dir = Path(__file__).resolve().parents[2]
 _runner_script = _root_dir / "src" / "scrape-runner.js"
 
 _jobs: dict[str, dict[str, Any]] = {}
+_running_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _track_task(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
+    _running_tasks.add(task)
+    task.add_done_callback(_running_tasks.discard)
+    return task
 
 
 class ScrapeRequest(BaseModel):
@@ -81,9 +89,18 @@ async def _run_job(job_id: str, query: str, max_results: int, avatar_type: str |
                 job["error"] = event.get("message")
                 job["finishedAt"] = datetime.now(timezone.utc).isoformat()
 
-    stdout_task = asyncio.create_task(read_stdout())
-    await process.wait()
-    await stdout_task
+    stdout_task = _track_task(asyncio.create_task(read_stdout()))
+    try:
+        await process.wait()
+        await stdout_task
+    except asyncio.CancelledError:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+        stdout_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await stdout_task
+        raise
 
     if process.returncode != 0 and job["status"] == "running":
         stderr = b""
@@ -126,8 +143,22 @@ async def create_scrape_job(payload: ScrapeRequest):
     }
     _jobs[job_id] = job
 
-    asyncio.create_task(_run_job(job_id, query, max_results, payload.avatarType))
+    _track_task(asyncio.create_task(_run_job(job_id, query, max_results, payload.avatarType)))
     return {"runId": job_id, "query": query, "maxResults": max_results}
+
+
+async def shutdown_scrape_jobs() -> None:
+    for job in _jobs.values():
+        process = job.get("process")
+        if process is not None and process.returncode is None:
+            process.kill()
+        await _broadcast(job, None)
+
+    for task in list(_running_tasks):
+        task.cancel()
+
+    if _running_tasks:
+        await asyncio.gather(*_running_tasks, return_exceptions=True)
 
 
 @router.get("/{job_id}")
