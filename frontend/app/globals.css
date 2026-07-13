@@ -453,6 +453,7 @@ a {
 
 .content-body:has(> .workspace-page--business.workspace-page--board-view) {
   background: var(--base);
+  overflow-y: auto;
 }
 
 /* Card style */
@@ -2204,6 +2205,9 @@ a {
 
 .workspace-page--business.workspace-page--board-view {
   background: var(--base);
+  height: auto;
+  max-height: none;
+  overflow: visible;
   --business-canvas-bg: var(--base);
   --business-surface-bg: #e6eeee;
   --business-surface-border: rgba(176, 208, 211, 0.95);
@@ -2220,6 +2224,16 @@ a {
   background: var(--business-canvas-bg);
 }
 
+.workspace-page--business.workspace-page--board-view .business-section--pipeline {
+  overflow: visible;
+  padding-bottom: var(--content-gutter);
+}
+
+.workspace-page--business.workspace-page--board-view .business-board-section {
+  overflow: visible;
+  flex: none;
+}
+
 .workspace-page--business.workspace-page--board-view .business-filter-select {
   background: var(--business-surface-bg);
   border: 1px solid var(--business-surface-border);
@@ -2228,6 +2242,8 @@ a {
 
 .workspace-page--business.workspace-page--board-view .pipeline-board-shell {
   background: transparent;
+  overflow: visible;
+  margin-bottom: 0;
 }
 
 .workspace-page--business.workspace-page--board-view .pipeline-list {
@@ -4214,6 +4230,11 @@ a {
     -webkit-overflow-scrolling: touch;
   }
 
+  .workspace-page--business.workspace-page--board-view {
+    max-height: none;
+    overflow: visible;
+  }
+
   .workspace-page--business .business-board-section {
     flex: none;
     overflow: visible;
@@ -4654,6 +4675,16 @@ a {
     overflow-y: auto;
     overflow-x: hidden;
     -webkit-overflow-scrolling: touch;
+  }
+
+  .workspace-page--business.workspace-page--board-view {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .workspace-page--business.workspace-page--board-view .business-section--pipeline {
+    padding-bottom: calc(var(--content-gutter) + var(--mobile-nav-height));
   }
 
   .workspace-source-panel--business {
