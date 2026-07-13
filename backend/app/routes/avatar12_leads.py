@@ -16,6 +16,7 @@ from app.services.avatar12_drafts import (
     list_avatar12_leads as service_list_avatar12_leads,
     mark_avatar12_draft_sent,
 )
+from app.services.outreach_send import OutreachSendError
 
 
 router = APIRouter(prefix="/api/avatar12", tags=["avatar12"])
@@ -54,6 +55,8 @@ def _lead_payload(lead: AvatarLead) -> dict:
         "past_experience": lead.past_experience,
         "location": lead.location,
         "linkedin_url": lead.linkedin_url,
+        "contact_email": lead.contact_email,
+        "contact_phone": lead.contact_phone,
         "search_prompt": lead.search_prompt,
         "source_snapshot": lead.source_snapshot,
         "source_query": lead.source_query,
@@ -75,8 +78,11 @@ def _draft_payload(draft) -> dict:
 
 class SendMessageRequest(BaseModel):
     channel: str | None = None
+    channels: list[str] | None = None
     note: str | None = None
     message: str | None = None
+    to_email: str | None = None
+    to_phone: str | None = None
 
 
 @router.get("/leads")
@@ -133,12 +139,18 @@ def get_latest_draft(lead_id: uuid.UUID, db: Session = Depends(get_db)):
 
 @router.post("/leads/{lead_id}/messages/send")
 def send_message(lead_id: uuid.UUID, payload: SendMessageRequest, db: Session = Depends(get_db)):
-    result = mark_avatar12_draft_sent(
-        db=db,
-        lead_id=lead_id,
-        channel=payload.channel,
-        message=payload.message,
-    )
+    try:
+        result = mark_avatar12_draft_sent(
+            db=db,
+            lead_id=lead_id,
+            channel=payload.channel,
+            message=payload.message,
+            to_email=payload.to_email,
+            to_phone=payload.to_phone,
+            channels=payload.channels,
+        )
+    except OutreachSendError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not result:
         raise HTTPException(status_code=404, detail="Lead not found")
     return result

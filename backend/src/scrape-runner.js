@@ -23,6 +23,7 @@ async function main() {
 
   const result = await runLeadPipeline(query, {
     maxResults,
+    avatarType: process.env.AVATAR_TYPE ?? 'avatar2',
     onProgress: emit,
   });
 

@@ -27,7 +27,7 @@ def _avatar_prompt(avatar_type: AvatarType) -> str:
             "(their role, company, headline, location, background). Do not use generic filler.\n"
             "- Include the landing page link provided in the context naturally in the body, e.g. inviting them to "
             "learn more or book a quick call via the link. The link must appear as a full URL on its own line so it's clearly visible.\n"
-            "- End with a clear, natural sign-off (e.g. 'Best regards,' or 'Looking forward to connecting,' followed by a name like 'Peter' or 'The Lead Scout Team').\n"
+            "- End with a clear, natural sign-off (e.g. 'Best regards,' or 'Looking forward to connecting,' followed by a name like 'Peter' or 'The InsureLead Team').\n"
             "- Keep the tone warm, human, and direct. This is the entire message body — not a subject line.\n"
             "Return only a single JSON object with exactly two string keys: draft_message and reasoning."
         )
@@ -40,7 +40,7 @@ def _avatar_prompt(avatar_type: AvatarType) -> str:
         "and background, framing the opportunity as a step up for someone seeking more scale, support, or growth.\n"
         "- Include the landing page link provided in the context naturally in the body, e.g. inviting them to "
         "learn more or book a quick call via the link. The link must appear as a full URL on its own line so it's clearly visible.\n"
-        "- End with a clear, natural sign-off (e.g. 'Best regards,' or 'Looking forward to connecting,' followed by a name like 'Peter' or 'The Lead Scout Team').\n"
+        "- End with a clear, natural sign-off (e.g. 'Best regards,' or 'Looking forward to connecting,' followed by a name like 'Peter' or 'The InsureLead Team').\n"
         "- Keep the tone warm, human, and direct. This is the entire message body — not a subject line.\n"
         "Return only a single JSON object with exactly two string keys: draft_message and reasoning."
     )
@@ -265,8 +265,10 @@ def list_avatar12_leads(*, db: Session, avatar_type: AvatarType | None = None, s
             "company": lead.company,
             "past_experience": lead.past_experience,
             "location": lead.location,
-            "linkedin_url": lead.linkedin_url,
-            "search_prompt": lead.search_prompt,
+        "linkedin_url": lead.linkedin_url,
+        "contact_email": lead.contact_email,
+        "contact_phone": lead.contact_phone,
+        "search_prompt": lead.search_prompt,
             "source_snapshot": lead.source_snapshot,
             "source_query": lead.source_query,
             "created_at": lead.created_at,
@@ -291,7 +293,12 @@ def mark_avatar12_draft_sent(
     lead_id: uuid.UUID,
     channel: str | None = None,
     message: str | None = None,
+    to_email: str | None = None,
+    to_phone: str | None = None,
+    channels: list[str] | None = None,
 ) -> dict[str, Any] | None:
+    from app.services.outreach_send import OutreachSendError, dispatch_outreach
+
     lead = db.scalar(select(AvatarLead).where(AvatarLead.id == lead_id).options(selectinload(AvatarLead.drafts)))
     if not lead:
         return None
@@ -299,7 +306,7 @@ def mark_avatar12_draft_sent(
     if not lead.drafts:
         draft = LeadDraft(
             avatar12_lead_id=lead.id,
-            status="sent",
+            status="draft",
             message=message or "",
             reasoning="Draft created from scratch by user.",
         )
@@ -309,13 +316,47 @@ def mark_avatar12_draft_sent(
         draft = sorted(lead.drafts, key=lambda item: item.created_at)[-1]
         if message is not None:
             draft.message = message
-        draft.status = "sent"
 
+    body = (message if message is not None else draft.message or "").strip()
+    if not body:
+        raise OutreachSendError("Message body is empty.")
+
+    selected_channels = channels or []
+    if not selected_channels:
+        normalized = (channel or "email").strip().lower()
+        if normalized in {"both", "email+sms", "email_sms"}:
+            selected_channels = ["email", "sms"]
+        elif normalized == "sms":
+            selected_channels = ["sms"]
+        else:
+            selected_channels = ["email"]
+
+    email_target = (to_email or lead.contact_email or "").strip()
+    phone_target = (to_phone or lead.contact_phone or "").strip()
+
+    if email_target:
+        lead.contact_email = email_target
+    if phone_target:
+        lead.contact_phone = phone_target
+
+    delivery = dispatch_outreach(
+        channels=selected_channels,
+        to_email=email_target,
+        to_phone=phone_target,
+        subject=f"Opportunity for {lead.name.split()[0] if lead.name else 'you'}",
+        body=body,
+    )
+
+    draft.status = "sent"
     db.commit()
     db.refresh(draft)
+    db.refresh(lead)
     return {
         "lead_id": str(lead.id),
-        "channel": channel or "email",
+        "channel": channel or ",".join(selected_channels),
+        "delivery": delivery,
+        "contact_email": lead.contact_email,
+        "contact_phone": lead.contact_phone,
         "draft": _draft_payload(draft),
     }
 
@@ -337,6 +378,15 @@ def record_avatar12_funnel_event(
         payload=None if payload is None else json.dumps(payload, default=str),
     )
     db.add(event)
+
+    if event_type == FunnelEventType.form_submitted and payload:
+        email = str(payload.get("email") or "").strip()
+        phone = str(payload.get("phone") or "").strip()
+        if email:
+            lead.contact_email = email
+        if phone:
+            lead.contact_phone = phone
+
     db.commit()
     db.refresh(event)
     return {

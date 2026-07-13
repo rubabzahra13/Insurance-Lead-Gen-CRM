@@ -117,6 +117,7 @@ class FollowUpPlan(Base):
     recommended_action: Mapped[str] = mapped_column(Text, nullable=False)
     suggested_channel: Mapped[str | None] = mapped_column(String(64))
     reasoning: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="pending")
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     business_lead = relationship("BusinessLead", back_populates="follow_up_plans")

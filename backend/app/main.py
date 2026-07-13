@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
 
 from app.config import load_settings
+from app.db import load_root_env
 from app.routes.avatar3_tools import router as avatar3_tools_router
 from app.routes.classify_search import router as classify_search_router
 from app.routes.dashboard import router as dashboard_router
@@ -14,6 +15,8 @@ from app.routes.avatar3_leads import router as avatar3_router
 
 
 import os
+
+load_root_env()
 
 public_app_url = os.getenv("PUBLIC_APP_URL", "http://localhost:3000").rstrip("/")
 origins = [
@@ -27,6 +30,8 @@ app = FastAPI(title="LeadGen API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    # Allow any local dev port (e.g. 3001, 3010 when 3000 is busy)
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

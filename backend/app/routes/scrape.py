@@ -23,6 +23,7 @@ _jobs: dict[str, dict[str, Any]] = {}
 class ScrapeRequest(BaseModel):
     query: str
     maxResults: int | None = None
+    avatarType: str | None = None
 
 
 async def _broadcast(job: dict[str, Any], event: dict[str, Any] | None) -> None:
@@ -34,11 +35,14 @@ async def _broadcast(job: dict[str, Any], event: dict[str, Any] | None) -> None:
             pass
 
 
-async def _run_job(job_id: str, query: str, max_results: int) -> None:
+async def _run_job(job_id: str, query: str, max_results: int, avatar_type: str | None = None) -> None:
     job = _jobs[job_id]
     job["startedAt"] = job.get("startedAt") or datetime.now(timezone.utc).isoformat()
 
     env = os.environ.copy()
+    if avatar_type in {"avatar1", "avatar2"}:
+        env["AVATAR_TYPE"] = avatar_type
+
     process = await asyncio.create_subprocess_exec(
         "node",
         str(_runner_script),
@@ -122,7 +126,7 @@ async def create_scrape_job(payload: ScrapeRequest):
     }
     _jobs[job_id] = job
 
-    asyncio.create_task(_run_job(job_id, query, max_results))
+    asyncio.create_task(_run_job(job_id, query, max_results, payload.avatarType))
     return {"runId": job_id, "query": query, "maxResults": max_results}
 
 

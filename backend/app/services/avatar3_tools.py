@@ -8,6 +8,7 @@ from urllib.parse import urljoin
 
 import httpx
 
+from app.db import load_root_env
 from app.services.llm.client import generate_structured
 
 
@@ -46,13 +47,51 @@ def map_google_place_to_business_lead(place: dict, details: dict | None = None) 
     }
 
 
+def _places_api_key() -> str:
+    load_root_env()
+    return (
+        os.getenv("PLACES_API_KEY")
+        or os.getenv("GOOGLE_PLACES_API_KEY")
+        or ""
+    ).strip()
+
+
+def _dev_mock_places(query: str) -> list[dict]:
+    location = query.split(" in ")[-1].strip() if " in " in query.lower() else "your area"
+    return [
+        {
+            "business_name": "Summit Roofing & Restoration",
+            "address": f"1200 Commerce St, {location}",
+            "website": "https://example.com/summit-roofing",
+            "google_place_id": "dev-mock-place-1",
+            "rating": 4.6,
+            "open_status": "OPEN",
+            "phone": "+1-555-0101",
+        },
+        {
+            "business_name": "Northline Contractors",
+            "address": f"88 Market Ave, {location}",
+            "website": "https://example.com/northline",
+            "google_place_id": "dev-mock-place-2",
+            "rating": 4.3,
+            "open_status": "OPEN",
+            "phone": "+1-555-0102",
+        },
+    ]
+
+
 def search_google_places(query: str, location_bias: str | None = None, api_key: str | None = None) -> list[dict]:
     trimmed_query = str(query or "").strip()
-    trimmed_key = str(api_key or os.getenv("PLACES_API_KEY") or "").strip()
+    trimmed_key = str(api_key or _places_api_key()).strip()
     if not trimmed_query:
         raise Avatar3APIError("query is required", status_code=400)
     if not trimmed_key:
-        raise Avatar3APIError("PLACES_API_KEY is missing or empty in the root .env file.", status_code=502)
+        if os.getenv("NODE_ENV", "").strip().lower() == "development":
+            return _dev_mock_places(trimmed_query)
+        raise Avatar3APIError(
+            "PLACES_API_KEY is missing. Add it to the root .env file to enable Google Places search.",
+            status_code=503,
+        )
 
     body = {"textQuery": f"{trimmed_query} {str(location_bias).strip()}".strip() if location_bias else trimmed_query}
     headers = {

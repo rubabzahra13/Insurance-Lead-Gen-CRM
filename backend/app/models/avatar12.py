@@ -30,6 +30,8 @@ class AvatarLead(Base):
     location: Mapped[str | None] = mapped_column(Text)
     company: Mapped[str | None] = mapped_column(Text)
     linkedin_url: Mapped[str | None] = mapped_column(Text)
+    contact_email: Mapped[str | None] = mapped_column(String(255))
+    contact_phone: Mapped[str | None] = mapped_column(String(64))
     search_prompt: Mapped[str | None] = mapped_column(Text)
     source_snapshot: Mapped[str | None] = mapped_column(Text)
     source_query: Mapped[str | None] = mapped_column(Text)

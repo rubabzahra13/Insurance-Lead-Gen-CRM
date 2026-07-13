@@ -3,6 +3,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import { Video, Calendar, Send, FileText, CheckCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
+import { BRAND } from '../../../lib/brand';
+import { COLORS, GRADIENT } from '../../../lib/colors';
 
 function getDaysInMonthGrid(dateObj) {
   const year = dateObj.getFullYear();
@@ -53,15 +55,17 @@ const TIME_SLOTS = [
 
 const INPUT_STYLE = {
   background: '#ffffff',
-  border: '1px solid #e2e8f0',
+  border: `1px solid ${COLORS.lightBlue}`,
   borderRadius: '10px',
   padding: '12px 14px',
-  color: '#0f172a',
+  color: COLORS.text,
   outline: 'none',
   transition: 'border-color 0.2s, box-shadow 0.2s',
   fontSize: '0.95rem',
   width: '100%',
 };
+
+const LANDING_VIDEO_ID = process.env.NEXT_PUBLIC_LANDING_VIDEO_YOUTUBE_ID || 'wRpsFyb_lp4';
 
 export default function LandingPage() {
   const { leadId } = useParams();
@@ -102,7 +106,17 @@ export default function LandingPage() {
         if (res.ok) {
           const data = await res.json();
           setLeadData(data);
-          setFormData(prev => ({ ...prev, name: data.name || '', email: data.email || '', phone: data.phone || '' }));
+          setFormData(prev => ({
+            ...prev,
+            name: data.name || '',
+            email: data.contact_email || data.email || '',
+            phone: data.contact_phone || data.phone || '',
+          }));
+          fetch(`${apiBaseUrl}/api/funnel-events/link_clicked`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lead_id: leadId }),
+          }).catch(() => {});
         } else if (isTestId) {
           setLeadData({ id: leadId, name: 'Alex Johnson', email: 'alex.johnson@example.com', phone: '+1 (555) 019-2834', avatar_type: 'Avatar 1' });
           setFormData(prev => ({ ...prev, name: 'Alex Johnson', email: 'alex.johnson@example.com', phone: '+1 (555) 019-2834' }));
@@ -163,7 +177,7 @@ export default function LandingPage() {
 
   if (loading) {
     return (
-      <div style={{ display: 'flex', height: '100vh', width: '100vw', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f8fafc', color: '#0f172a' }}>
+      <div style={{ display: 'flex', height: '100vh', width: '100vw', alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.white, color: COLORS.text }}>
         <p style={{ fontSize: '1.2rem', opacity: 0.7 }}>Loading opportunity portal...</p>
       </div>
     );
@@ -171,14 +185,14 @@ export default function LandingPage() {
 
   if (error) {
     return (
-      <div style={{ display: 'flex', height: '100vh', width: '100vw', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f8fafc', color: '#0f172a', padding: '24px', textAlign: 'center' }}>
-        <div style={{ background: 'rgba(220, 38, 38, 0.04)', border: '1px solid rgba(220, 38, 38, 0.15)', padding: '32px', borderRadius: '16px', maxWidth: '480px' }}>
-          <AlertTriangle size={48} style={{ color: '#dc2626', marginBottom: '16px' }} />
+      <div style={{ display: 'flex', height: '100vh', width: '100vw', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.white, color: COLORS.text, padding: '24px', textAlign: 'center' }}>
+        <div style={{ background: 'rgba(181, 74, 58, 0.06)', border: '1px solid rgba(181, 74, 58, 0.15)', padding: '32px', borderRadius: '16px', maxWidth: '480px' }}>
+          <AlertTriangle size={48} style={{ color: COLORS.error, marginBottom: '16px' }} />
           <h2 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '12px' }}>Link Expired or Invalid</h2>
-          <p style={{ color: '#475569', lineHeight: '1.6', marginBottom: '24px' }}>
+          <p style={{ color: 'var(--text-secondary)', lineHeight: '1.6', marginBottom: '24px' }}>
             This invitation link is invalid or has expired. Please verify the URL or contact your recruiting agent for a new invite.
           </p>
-          <a href="/" style={{ display: 'inline-block', background: '#f1f5f9', border: '1px solid #e2e8f0', padding: '10px 20px', borderRadius: '8px', fontSize: '0.95rem', color: '#0f172a' }}>
+          <a href="/" style={{ display: 'inline-block', background: COLORS.white, border: `1px solid ${COLORS.lightBlue}`, padding: '10px 20px', borderRadius: '8px', fontSize: '0.95rem', color: COLORS.text }}>
             Return to Dashboard
           </a>
         </div>
@@ -187,28 +201,28 @@ export default function LandingPage() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#f8fafc', color: '#0f172a', fontFamily: "'Outfit', sans-serif", padding: '40px 24px' }}>
-      <div style={{ maxWidth: '1100px', margin: '0 auto' }}>
+    <div className="landing-page" style={{ backgroundColor: COLORS.white, color: COLORS.text, fontFamily: "'Outfit', sans-serif" }}>
+      <div className="landing-page__inner">
         {/* Header */}
-        <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '60px', paddingBottom: '20px', borderBottom: '1px solid #e2e8f0' }}>
+        <header className="landing-page__header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ffffff', fontWeight: 800 }}>LS</div>
-            <span style={{ fontWeight: 700, fontSize: '1.2rem', letterSpacing: '-0.02em', color: '#0f172a' }}>Lead Scout Partners</span>
+            <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: GRADIENT, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ffffff', fontWeight: 800 }}>{BRAND.logoInitials}</div>
+            <span style={{ fontWeight: 700, fontSize: '1.2rem', letterSpacing: '-0.02em', color: COLORS.text }}>{BRAND.senderName}</span>
           </div>
-          <span style={{ fontSize: '0.85rem', color: '#475569', background: '#ffffff', padding: '6px 12px', borderRadius: '20px', border: '1px solid #e2e8f0' }}>
+          <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', background: '#ffffff', padding: '6px 12px', borderRadius: '20px', border: `1px solid ${COLORS.lightBlue}` }}>
             Exclusive Opportunity
           </span>
         </header>
 
         {/* Content columns */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '48px', alignItems: 'start' }}>
+        <div className="landing-page__grid">
           
           {/* Left Column: Info & Video */}
           <div>
-            <h2 style={{ fontSize: '2.5rem', fontWeight: 800, lineHeight: 1.2, marginBottom: '20px', color: '#0f172a' }}>
+            <h2 className="landing-page__hero-title" style={{ color: COLORS.text }}>
               Hi {leadData?.name ? leadData.name.split(' ')[0] : 'there'}, unlock your next career milestone.
             </h2>
-            <p style={{ color: '#475569', fontSize: '1.1rem', lineHeight: 1.6, marginBottom: '32px' }}>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem', lineHeight: 1.6, marginBottom: '32px' }}>
               We have identified you as a prime candidate for our high-growth insurance advisory team. Watch our 2-minute overview video below to see how we empower partners with warm leads and top-tier commissions.
             </p>
 
@@ -216,12 +230,12 @@ export default function LandingPage() {
             <div style={{ 
               position: 'relative', paddingTop: '56.25%',
               borderRadius: '16px', overflow: 'hidden', background: '#ffffff', 
-              border: '1px solid #e2e8f0', boxShadow: '0 4px 16px rgba(0,0,0,0.06)'
+              border: `1px solid ${COLORS.lightBlue}`, boxShadow: '0 4px 16px rgba(0,0,0,0.06)'
             }}>
               <iframe 
                 style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', border: 0 }}
-                src="https://www.youtube.com/embed/dQw4w9WgXcQ" 
-                title="Lead Scout Explainer"
+                src={`https://www.youtube.com/embed/${LANDING_VIDEO_ID}`}
+                title="Insurance Career Overview"
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
                 allowFullScreen
               ></iframe>
@@ -229,22 +243,16 @@ export default function LandingPage() {
           </div>
 
           {/* Right Column: Form → Calendar Booking */}
-          <div style={{ 
-            background: '#ffffff', 
-            border: '1px solid #e2e8f0', 
-            borderRadius: '24px', 
-            padding: '32px',
-            boxShadow: '0 4px 20px rgba(0,0,0,0.04)'
-          }}>
+          <div className="landing-page__form-card">
             {!formSubmitted ? (
               <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
                 <div style={{ marginBottom: '6px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#2563eb', marginBottom: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: COLORS.oldRose, marginBottom: '8px' }}>
                     <FileText size={18} />
                     <span style={{ fontSize: '0.85rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Step 1 of 2</span>
                   </div>
                   <h3 style={{ fontSize: '1.25rem', fontWeight: 700 }}>Express Interest</h3>
-                  <p style={{ color: '#475569', fontSize: '0.9rem', marginTop: '4px' }}>Confirm your contact details and background to proceed to calendar booking.</p>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '4px' }}>Confirm your contact details and background to proceed to calendar booking.</p>
                 </div>
 
                 {[
@@ -254,40 +262,40 @@ export default function LandingPage() {
                   { label: 'Current City & State', name: 'city', type: 'text', required: true, placeholder: 'e.g. Dallas, TX' },
                 ].map(field => (
                   <div key={field.name} style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    <label style={{ fontSize: '0.85rem', fontWeight: 500, color: '#475569' }}>{field.label}</label>
+                    <label style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--text-secondary)' }}>{field.label}</label>
                     <input 
                       type={field.type} name={field.name} required={field.required}
                       placeholder={field.placeholder || ''}
                       value={formData[field.name]}
                       onChange={handleInputChange}
                       style={INPUT_STYLE}
-                      onFocus={(e) => { e.target.style.borderColor = '#2563eb'; e.target.style.boxShadow = '0 0 0 3px rgba(37,99,235,0.1)'; }}
-                      onBlur={(e) => { e.target.style.borderColor = '#e2e8f0'; e.target.style.boxShadow = 'none'; }}
+                      onFocus={(e) => { e.target.style.borderColor = COLORS.oldRose; e.target.style.boxShadow = '0 0 0 3px rgba(192,132,151,0.15)'; }}
+                      onBlur={(e) => { e.target.style.borderColor = COLORS.lightBlue; e.target.style.boxShadow = 'none'; }}
                     />
                   </div>
                 ))}
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <label style={{ fontSize: '0.85rem', fontWeight: 500, color: '#475569' }}>Summarize your past sales/insurance experience</label>
+                  <label style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--text-secondary)' }}>Summarize your past sales/insurance experience</label>
                   <textarea 
                     name="experience" rows="3" required
                     placeholder="Briefly describe your background..."
                     value={formData.experience}
                     onChange={handleInputChange}
                     style={{ ...INPUT_STYLE, resize: 'vertical' }}
-                    onFocus={(e) => { e.target.style.borderColor = '#2563eb'; e.target.style.boxShadow = '0 0 0 3px rgba(37,99,235,0.1)'; }}
-                    onBlur={(e) => { e.target.style.borderColor = '#e2e8f0'; e.target.style.boxShadow = 'none'; }}
+                    onFocus={(e) => { e.target.style.borderColor = COLORS.oldRose; e.target.style.boxShadow = '0 0 0 3px rgba(192,132,151,0.15)'; }}
+                    onBlur={(e) => { e.target.style.borderColor = COLORS.lightBlue; e.target.style.boxShadow = 'none'; }}
                   ></textarea>
                 </div>
 
                 <button 
                   type="submit" 
                   style={{ 
-                    background: 'linear-gradient(135deg, #2563eb 0%, #7c3aed 100%)', 
+                    background: GRADIENT, 
                     color: '#ffffff', fontWeight: 700, border: 'none', borderRadius: '10px', 
                     padding: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center',
                     justifyContent: 'center', gap: '8px',
-                    boxShadow: '0 4px 14px rgba(37, 99, 235, 0.2)', marginTop: '6px', fontSize: '1rem'
+                    boxShadow: '0 4px 14px rgba(192, 132, 151, 0.2)', marginTop: '6px', fontSize: '1rem'
                   }}
                 >
                   Continue to Booking <Send size={16} />
@@ -297,18 +305,18 @@ export default function LandingPage() {
               /* Booking Confirmation */
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: '16px', padding: '32px 0' }}>
                 <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(5, 150, 105, 0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <CheckCircle size={32} style={{ color: '#059669' }} />
+                  <CheckCircle size={32} style={{ color: COLORS.success }} />
                 </div>
                 <h3 style={{ fontSize: '1.4rem', fontWeight: 700 }}>Meeting Confirmed!</h3>
-                <p style={{ color: '#475569', fontSize: '0.95rem', lineHeight: 1.6, maxWidth: '360px' }}>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.6, maxWidth: '360px' }}>
                   You're booked for <strong>{selectedDate?.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</strong> at <strong>{selectedTime}</strong>.
                   You'll receive a calendar invite shortly.
                 </p>
-                <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '16px 24px', display: 'flex', alignItems: 'center', gap: '12px', marginTop: '8px' }}>
-                  <Calendar size={20} style={{ color: '#2563eb' }} />
+                <div style={{ background: COLORS.white, border: `1px solid ${COLORS.lightBlue}`, borderRadius: '12px', padding: '16px 24px', display: 'flex', alignItems: 'center', gap: '12px', marginTop: '8px' }}>
+                  <Calendar size={20} style={{ color: COLORS.oldRose }} />
                   <div style={{ textAlign: 'left' }}>
                     <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{selectedDate?.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</div>
-                    <div style={{ color: '#475569', fontSize: '0.82rem' }}>{selectedTime} · 15 min intro call</div>
+                    <div style={{ color: 'var(--text-secondary)', fontSize: '0.82rem' }}>{selectedTime} · 15 min intro call</div>
                   </div>
                 </div>
               </div>
@@ -316,17 +324,17 @@ export default function LandingPage() {
               /* Interactive Calendar Booking */
               <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                 <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#059669', marginBottom: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: COLORS.success, marginBottom: '8px' }}>
                     <CheckCircle size={18} />
                     <span style={{ fontSize: '0.85rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Step 2 of 2</span>
                   </div>
                   <h3 style={{ fontSize: '1.25rem', fontWeight: 700 }}>Pick a Day & Time</h3>
-                  <p style={{ color: '#475569', fontSize: '0.9rem', marginTop: '4px' }}>Choose a convenient slot for a 15-minute introductory call.</p>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '4px' }}>Choose a convenient slot for a 15-minute introductory call.</p>
                 </div>
 
                 {/* Compact Date Picker Widget */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <label style={{ fontSize: '0.85rem', fontWeight: 500, color: '#475569' }}>Select Date</label>
+                  <label style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--text-secondary)' }}>Select Date</label>
                   <div style={{ position: 'relative' }}>
                     <button
                       type="button"
@@ -336,10 +344,10 @@ export default function LandingPage() {
                         alignItems: 'center',
                         gap: '10px',
                         padding: '12px 14px',
-                        border: '1px solid #e2e8f0',
+                        border: `1px solid ${COLORS.lightBlue}`,
                         borderRadius: '10px',
                         background: '#ffffff',
-                        color: '#0f172a',
+                        color: COLORS.text,
                         fontSize: '0.95rem',
                         cursor: 'pointer',
                         width: '100%',
@@ -349,10 +357,10 @@ export default function LandingPage() {
                       }}
                     >
                       <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <Calendar size={18} style={{ color: '#2563eb' }} />
+                        <Calendar size={18} style={{ color: COLORS.oldRose }} />
                         {selectedDate ? selectedDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : 'Choose a date...'}
                       </span>
-                      <span style={{ fontSize: '0.8rem', color: '#64748b' }}>{showDatePicker ? '▲' : '▼'}</span>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{showDatePicker ? '▲' : '▼'}</span>
                     </button>
 
                     {showDatePicker && (
@@ -363,7 +371,7 @@ export default function LandingPage() {
                         right: 0,
                         zIndex: 50,
                         background: '#ffffff',
-                        border: '1px solid #e2e8f0',
+                        border: `1px solid ${COLORS.lightBlue}`,
                         borderRadius: '14px',
                         padding: '16px',
                         boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)',
@@ -379,7 +387,7 @@ export default function LandingPage() {
                               setCurrentMonth(newMonth);
                             }}
                             style={{
-                              background: '#f1f5f9',
+                              background: COLORS.white,
                               border: 'none',
                               borderRadius: '6px',
                               padding: '6px',
@@ -391,7 +399,7 @@ export default function LandingPage() {
                           >
                             <ChevronLeft size={16} />
                           </button>
-                          <span style={{ fontWeight: 700, fontSize: '0.95rem', color: '#0f172a' }}>
+                          <span style={{ fontWeight: 700, fontSize: '0.95rem', color: COLORS.text }}>
                             {currentMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
                           </span>
                           <button
@@ -402,7 +410,7 @@ export default function LandingPage() {
                               setCurrentMonth(newMonth);
                             }}
                             style={{
-                              background: '#f1f5f9',
+                              background: COLORS.white,
                               border: 'none',
                               borderRadius: '6px',
                               padding: '6px',
@@ -424,7 +432,7 @@ export default function LandingPage() {
                           textAlign: 'center',
                           fontWeight: 600,
                           fontSize: '0.75rem',
-                          color: '#64748b',
+                          color: 'var(--text-muted)',
                           marginBottom: '8px',
                         }}>
                           {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map(d => <span key={d}>{d}</span>)}
@@ -456,7 +464,7 @@ export default function LandingPage() {
                                   border: 'none',
                                   borderRadius: '8px',
                                   background: isSelected
-                                    ? '#2563eb'
+                                    ? COLORS.oldRose
                                     : isToday
                                     ? '#eff6ff'
                                     : 'transparent',
@@ -465,8 +473,8 @@ export default function LandingPage() {
                                     : isPast
                                     ? '#cbd5e1'
                                     : isCurrentMonth
-                                    ? '#0f172a'
-                                    : '#94a3b8',
+                                    ? COLORS.text
+                                    : COLORS.lightBlue,
                                   fontWeight: isSelected || isToday ? 700 : 500,
                                   fontSize: '0.85rem',
                                   cursor: isPast ? 'not-allowed' : 'pointer',
@@ -488,12 +496,12 @@ export default function LandingPage() {
                 {selectedDate && (
                   <div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
-                      <Clock size={14} style={{ color: '#475569' }} />
-                      <span style={{ fontWeight: 600, fontSize: '0.85rem', color: '#475569' }}>
+                      <Clock size={14} style={{ color: 'var(--text-secondary)' }} />
+                      <span style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
                         Available times for {selectedDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
                       </span>
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                    <div className="landing-time-slots">
                       {TIME_SLOTS.map(slot => {
                         const isSelected = selectedTime === slot;
                         return (
@@ -504,9 +512,9 @@ export default function LandingPage() {
                               padding: '10px 8px',
                               borderRadius: '8px',
                               cursor: 'pointer',
-                              background: isSelected ? '#2563eb' : '#ffffff',
-                              border: isSelected ? '1px solid #2563eb' : '1px solid #e2e8f0',
-                              color: isSelected ? '#ffffff' : '#0f172a',
+                              background: isSelected ? COLORS.oldRose : '#ffffff',
+                              border: isSelected ? `1px solid ${COLORS.oldRose}` : `1px solid ${COLORS.lightBlue}`,
+                              color: isSelected ? '#ffffff' : COLORS.text,
                               fontWeight: isSelected ? 700 : 500,
                               fontSize: '0.85rem',
                               transition: 'all 0.15s ease',
@@ -525,8 +533,8 @@ export default function LandingPage() {
                   onClick={handleBookMeeting}
                   disabled={!selectedDate || !selectedTime || bookingSubmitting}
                   style={{ 
-                    background: (!selectedDate || !selectedTime) ? '#e2e8f0' : 'linear-gradient(135deg, #059669 0%, #10b981 100%)', 
-                    color: (!selectedDate || !selectedTime) ? '#94a3b8' : '#ffffff', 
+                    background: (!selectedDate || !selectedTime) ? COLORS.lightBlue : COLORS.success, 
+                    color: (!selectedDate || !selectedTime) ? COLORS.lightBlue : '#ffffff', 
                     fontWeight: 700, border: 'none', borderRadius: '10px', 
                     padding: '14px', cursor: (!selectedDate || !selectedTime) ? 'not-allowed' : 'pointer',
                     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
