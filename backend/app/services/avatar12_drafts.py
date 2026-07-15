@@ -100,8 +100,11 @@ def generate_avatar_draft(
     timeout_seconds: int = 60,
     client_call=generate_structured,
 ) -> dict[str, str] | None:
-    # Build landing page URL from env
-    frontend_base = os.getenv("PUBLIC_APP_URL", "http://localhost:3000").rstrip("/")
+    # Build landing page URL from env (default to localhost for local development)
+    if os.getenv("NODE_ENV", "").lower() == "development":
+        frontend_base = "http://localhost:3000"
+    else:
+        frontend_base = os.getenv("PUBLIC_APP_URL", "http://localhost:3000").rstrip("/")
     landing_page_url = f"{frontend_base}/landing-page/{lead_id}" if lead_id else None
 
     prompt_context = _lead_prompt_context(

@@ -52,6 +52,7 @@ if frontend_url and not frontend_url.startswith("http"):
 origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://insurance-lead-gen-crm-two.vercel.app",
 ]
 if frontend_url and frontend_url not in origins:
     origins.append(frontend_url)

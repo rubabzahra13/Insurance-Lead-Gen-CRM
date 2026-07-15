@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 def load_root_env() -> None:
     root_env = Path(__file__).resolve().parents[2] / ".env"
-    load_dotenv(root_env)
+    load_dotenv(root_env, override=True)
 
 
 def supabase_connection_string() -> str:
