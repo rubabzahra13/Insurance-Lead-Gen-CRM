@@ -126,7 +126,7 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
     let classifiedData = null;
 
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+      const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
       const res = await fetch(`${apiBaseUrl}/api/classify-search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -206,7 +206,7 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
   // Poll Job Status (Fallback / Backup Poller)
   const pollJobStatus = async (runId) => {
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+      const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
       const pollRes = await fetch(`${apiBaseUrl}/api/scrape/${runId}`);
       if (!pollRes.ok) return false;
       const job = await pollRes.json();
@@ -274,7 +274,7 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
 
   // Run Avatar 1/2 (LinkedIn scraping SSE pipeline)
   const runRecruitmentScraper = async (query, avatarType) => {
-    const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+    const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
     appendLogs([
       `[STEP] Starting Stage 2: Sourcing individual leads (LinkedIn)...`,
       `[LOG] Submitting scrape trigger request to shared backend...`,
@@ -364,7 +364,7 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
       // Database fallback loader
       setTimeout(async () => {
         try {
-          const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+          const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
           const dbLeadsRes = await fetch(`${apiBaseUrl}/api/avatar12/leads`);
           if (dbLeadsRes.ok) {
             const dbLeads = await dbLeadsRes.json();
@@ -410,7 +410,7 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
 
               for (const cand of mockCandidates) {
                 try {
-                  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+                  const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
                   await fetch(`${apiBaseUrl}/api/avatar12/leads`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },

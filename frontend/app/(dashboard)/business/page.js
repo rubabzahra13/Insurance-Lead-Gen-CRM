@@ -4,6 +4,15 @@ import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { LEAD_PATH } from '../../../lib/avatar-labels';
 import { COLORS, RGBA, BUSINESS_STAGES } from '../../../lib/colors';
+import {
+  API_CACHE_KEYS,
+  avatar3LeadDetailKey,
+  avatar3SearchKey,
+  fetchCachedJson,
+  getApiCache,
+  setApiCache,
+} from '../../../lib/api-cache';
+import { getApiBaseUrl } from '../../../lib/apiBaseUrl';
 import { 
   Search, Plus, MapPin, Star, Phone, Globe, 
   ChevronRight, Loader2, AlertTriangle, CheckCircle2, 
@@ -28,18 +37,19 @@ const STAGES = BUSINESS_STAGES;
 function BusinessWorkspaceContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+  const apiBaseUrl = getApiBaseUrl();
 
   // Route states
   const urlQuery = searchParams.get('q') || '';
   const urlView = searchParams.get('view');
   const initialLeadId = searchParams.get('leadId') || null;
 
-  // Pipeline leads state
+  // Pipeline leads state — hydrate from cache so pipeline/table tabs skip loading flash
   const [leads, setLeads] = useState([]);
   const [leadsLoading, setLeadsLoading] = useState(true);
   const [leadsError, setLeadsError] = useState(false);
   const [selectedQueryFilter, setSelectedQueryFilter] = useState('');
+  const [leadsHydrated, setLeadsHydrated] = useState(false);
 
   // Search/sourcing states
   const [searchQuery, setSearchQuery] = useState(urlQuery);
@@ -229,7 +239,7 @@ function BusinessWorkspaceContent() {
     <div className="business-tab-state">
       <AlertTriangle size={36} style={{ color: COLORS.error }} />
       <h4>Failed to load leads</h4>
-      <button type="button" onClick={fetchPipelineLeads} className="chip-fallback-btn">Retry</button>
+      <button type="button" onClick={() => fetchPipelineLeads({ force: true })} className="chip-fallback-btn">Retry</button>
     </div>
   );
 
@@ -251,14 +261,23 @@ function BusinessWorkspaceContent() {
   };
 
   // Fetch pipeline leads on mount
-  const fetchPipelineLeads = async () => {
-    setLeadsLoading(true);
+  const fetchPipelineLeads = async ({ force = false } = {}) => {
+    if (!force) {
+      const cached = getApiCache(API_CACHE_KEYS.avatar3Leads);
+      if (cached) {
+        setLeads(cached.items || []);
+        setLeadsLoading(false);
+        void fetchPipelineLeads({ force: true });
+        return;
+      }
+    }
+    if (!force) setLeadsLoading(true);
     setLeadsError(false);
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
-      const res = await fetch(`${apiBaseUrl}/api/avatar3/leads`);
-      if (!res.ok) throw new Error('Failed to fetch business leads');
-      const data = await res.json();
+      const { data } = await fetchCachedJson(`${apiBaseUrl}/api/avatar3/leads`, {
+        cacheKey: API_CACHE_KEYS.avatar3Leads,
+        force: true,
+      });
       setLeads(data.items || []);
     } catch (err) {
       console.error(err);
@@ -268,13 +287,35 @@ function BusinessWorkspaceContent() {
     }
   };
 
-  const executeSearch = async (queryStr) => {
+  const syncLeadsCache = (nextLeads) => {
+    setApiCache(API_CACHE_KEYS.avatar3Leads, { items: nextLeads });
+  };
+
+  const syncLeadDetailCache = (leadId, detail) => {
+    if (!leadId || !detail) return;
+    setApiCache(avatar3LeadDetailKey(leadId), detail);
+  };
+
+  const executeSearch = async (queryStr, { force = false } = {}) => {
     if (!queryStr.trim()) return;
-    setSearchLoading(true);
+    const cacheKey = avatar3SearchKey(queryStr);
+
+    if (!force) {
+      const cached = getApiCache(cacheKey);
+      if (cached) {
+        setSearchResults(cached.preview || []);
+        setSearchLoading(false);
+        setSearchError(false);
+        setShowSearchPanel(true);
+        void executeSearch(queryStr, { force: true });
+        return;
+      }
+    }
+
+    if (!force) setSearchLoading(true);
     setSearchError(false);
     setShowSearchPanel(true);
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
       const res = await fetch(`${apiBaseUrl}/api/avatar3/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -286,6 +327,7 @@ function BusinessWorkspaceContent() {
         throw new Error(detail);
       }
       setSearchResults(data.preview || []);
+      setApiCache(cacheKey, { preview: data.preview || [] });
     } catch (err) {
       console.error(err);
       setSearchError(true);
@@ -295,24 +337,48 @@ function BusinessWorkspaceContent() {
     }
   };
 
-  // Sourcing initial search if query param is present on mount
+  // Hydrate leads from cache on first mount, then keep fresh in background
   useEffect(() => {
+    const cached = getApiCache(API_CACHE_KEYS.avatar3Leads);
+    if (cached) {
+      setLeads(cached.items || []);
+      setLeadsLoading(false);
+    }
+    setLeadsHydrated(true);
+  }, []);
+
+  // Fetch pipeline leads once hydrated (and when URL query changes for sourcing)
+  useEffect(() => {
+    if (!leadsHydrated) return;
     fetchPipelineLeads();
     if (urlQuery) {
       executeSearch(urlQuery);
     }
-  }, [urlQuery]);
+  }, [leadsHydrated, urlQuery]);
 
-  // Load details for selected lead
-  const fetchLeadDetails = async (id) => {
+  // Load details for selected lead (cached per lead id)
+  const fetchLeadDetails = async (id, { force = false } = {}) => {
     if (!id) return;
-    setDetailsLoading(true);
+    const cacheKey = avatar3LeadDetailKey(id);
+
+    if (!force) {
+      const cached = getApiCache(cacheKey);
+      if (cached) {
+        setLeadDetails(cached);
+        setDetailsLoading(false);
+        setDetailsError(false);
+        void fetchLeadDetails(id, { force: true });
+        return;
+      }
+    }
+
+    if (!force) setDetailsLoading(true);
     setDetailsError(false);
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
-      const res = await fetch(`${apiBaseUrl}/api/avatar3/leads/${id}`);
-      if (!res.ok) throw new Error('Failed to fetch lead details');
-      const data = await res.json();
+      const { data } = await fetchCachedJson(`${apiBaseUrl}/api/avatar3/leads/${id}`, {
+        cacheKey,
+        force: true,
+      });
       setLeadDetails(data);
     } catch (err) {
       console.error(err);
@@ -347,14 +413,17 @@ function BusinessWorkspaceContent() {
     if (!selectedLeadId || !leadDetails?.website) return;
     setEnriching(true);
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
       const res = await fetch(`${apiBaseUrl}/api/avatar3/leads/${selectedLeadId}/enrich`, { method: 'POST' });
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
         throw new Error(errBody.detail || 'Enrichment failed');
       }
       const data = await res.json();
-      setLeadDetails((prev) => (prev ? { ...prev, ...data } : data));
+      setLeadDetails((prev) => {
+        const next = prev ? { ...prev, ...data } : data;
+        syncLeadDetailCache(selectedLeadId, next);
+        return next;
+      });
       showToast('Contact details enriched from website');
     } catch (err) {
       console.error(err);
@@ -368,7 +437,6 @@ function BusinessWorkspaceContent() {
     if (!selectedLeadId || !planId) return;
     setApprovingPlan(true);
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
       const res = await fetch(
         `${apiBaseUrl}/api/avatar3/leads/${selectedLeadId}/follow-up-plans/${planId}/approve`,
         {
@@ -381,7 +449,7 @@ function BusinessWorkspaceContent() {
         const errBody = await res.json().catch(() => ({}));
         throw new Error(errBody.detail || 'Failed to approve follow-up');
       }
-      await fetchLeadDetails(selectedLeadId);
+      await fetchLeadDetails(selectedLeadId, { force: true });
       showToast('Follow-up approved and outreach dispatched');
     } catch (err) {
       console.error(err);
@@ -394,7 +462,6 @@ function BusinessWorkspaceContent() {
   // Sourcing import: Add a searched business lead straight into the board
   const handleAddLead = async (business) => {
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
       const res = await fetch(`${apiBaseUrl}/api/avatar3/leads`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -419,7 +486,11 @@ function BusinessWorkspaceContent() {
         handleSelectLead(leadData.id);
       } else {
         showToast(`Added "${leadData.business_name}" to pipeline!`, 'success');
-        setLeads(prev => [leadData, ...prev]);
+        setLeads(prev => {
+          const next = [leadData, ...prev];
+          syncLeadsCache(next);
+          return next;
+        });
         setWorkspaceSection('pipeline');
       }
     } catch (err) {
@@ -439,15 +510,18 @@ function BusinessWorkspaceContent() {
 
     // Optimistic UI updates
     const previousLeads = [...leads];
-    setLeads(prev => prev.map(l => {
-      if (l.id === leadId) {
-        return { ...l, pipeline_stage: toStage };
-      }
-      return l;
-    }));
+    setLeads(prev => {
+      const next = prev.map(l => {
+        if (l.id === leadId) {
+          return { ...l, pipeline_stage: toStage };
+        }
+        return l;
+      });
+      syncLeadsCache(next);
+      return next;
+    });
 
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
       const patchRes = await fetch(`${apiBaseUrl}/api/avatar3/leads/${leadId}/stage`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -459,11 +533,20 @@ function BusinessWorkspaceContent() {
       const updatedLead = await patchRes.json();
       
       // Update in-memory list with backend response
-      setLeads(prev => prev.map(l => (l.id === leadId ? updatedLead : l)));
+      setLeads(prev => {
+        const next = prev.map(l => (l.id === leadId ? updatedLead : l));
+        syncLeadsCache(next);
+        return next;
+      });
       
       // If currently selected lead details are active, sync them
       if (selectedLeadId === leadId) {
-        setLeadDetails(prev => (prev ? { ...prev, pipeline_stage: toStage } : null));
+        setLeadDetails(prev => {
+          if (!prev) return null;
+          const next = { ...prev, pipeline_stage: toStage };
+          syncLeadDetailCache(leadId, next);
+          return next;
+        });
       }
 
       showToast('Lead stage updated successfully.');
@@ -472,6 +555,7 @@ function BusinessWorkspaceContent() {
       console.error(err);
       // Revert change
       setLeads(previousLeads);
+      syncLeadsCache(previousLeads);
       showToast('Failed to update lead stage. Reverted changes.', 'error');
     }
   };
@@ -491,7 +575,6 @@ function BusinessWorkspaceContent() {
     const savedText = newNoteContent; // preserve in case of error
     setNoteSaving(true);
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
       const res = await fetch(`${apiBaseUrl}/api/avatar3/leads/${selectedLeadId}/notes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -503,14 +586,19 @@ function BusinessWorkspaceContent() {
       // Backend now returns the full updated lead (stage, plans, events) in one shot
       const updatedLead = await res.json();
       setLeadDetails(updatedLead);
+      syncLeadDetailCache(selectedLeadId, updatedLead);
       setNewNoteContent('');
 
       // Sync board column if reclassification agent moved the stage
-      setLeads(prev => prev.map(l =>
-        l.id === selectedLeadId
-          ? { ...l, pipeline_stage: updatedLead.pipeline_stage }
-          : l
-      ));
+      setLeads(prev => {
+        const next = prev.map(l =>
+          l.id === selectedLeadId
+            ? { ...l, pipeline_stage: updatedLead.pipeline_stage }
+            : l
+        );
+        syncLeadsCache(next);
+        return next;
+      });
 
       const latestPlan = updatedLead.follow_up_plans?.slice(-1)[0];
       const stageChanged = updatedLead.pipeline_stage !== leadDetails?.pipeline_stage;
@@ -564,8 +652,12 @@ function BusinessWorkspaceContent() {
         </nav>
       </header>
 
-      {workspaceSection === 'source' && (
-        <div className="individual-section individual-section--source">
+      {/* Keep all three tabs mounted so switching Pipeline ↔ Table ↔ Source is instant */}
+      <div
+        className="individual-section individual-section--source"
+        hidden={workspaceSection !== 'source'}
+        aria-hidden={workspaceSection !== 'source'}
+      >
           {!showSearchPanel ? (
             <section className="individual-search-hub" aria-label="Find new businesses">
               <div className="individual-search-hub__inner">
@@ -689,11 +781,13 @@ function BusinessWorkspaceContent() {
               )}
             </div>
           )}
-        </div>
-      )}
+      </div>
 
-      {workspaceSection === 'pipeline' && (
-        <div className="business-section business-section--pipeline">
+      <div
+        className="business-section business-section--pipeline"
+        hidden={workspaceSection !== 'pipeline'}
+        aria-hidden={workspaceSection !== 'pipeline'}
+      >
           {leadsLoading ? renderLeadsLoading() : leadsError ? renderLeadsError() : leads.length === 0 ? renderEmptyPipeline() : (
             <div className="business-board-section">
               <div className="business-tab-toolbar">
@@ -707,11 +801,13 @@ function BusinessWorkspaceContent() {
               </div>
             </div>
           )}
-        </div>
-      )}
+      </div>
 
-      {workspaceSection === 'table' && (
-        <div className="business-section business-section--table">
+      <div
+        className="business-section business-section--table"
+        hidden={workspaceSection !== 'table'}
+        aria-hidden={workspaceSection !== 'table'}
+      >
           {leadsLoading ? renderLeadsLoading() : leadsError ? renderLeadsError() : (
             <>
               <div className="business-tab-toolbar">
@@ -784,8 +880,7 @@ function BusinessWorkspaceContent() {
               )}
             </>
           )}
-        </div>
-      )}
+      </div>
 
       {/* Detail Slide-over Panel (Step 3.7) */}
       {selectedLeadId && (
@@ -805,7 +900,7 @@ function BusinessWorkspaceContent() {
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '16px' }}>
               <AlertTriangle size={36} style={{ color: COLORS.error }} />
               <h4 style={{ fontWeight: 600 }}>Failed to load lead details</h4>
-              <button onClick={() => fetchLeadDetails(selectedLeadId)} className="chip-fallback-btn">
+              <button onClick={() => fetchLeadDetails(selectedLeadId, { force: true })} className="chip-fallback-btn">
                 Retry Details
               </button>
             </div>

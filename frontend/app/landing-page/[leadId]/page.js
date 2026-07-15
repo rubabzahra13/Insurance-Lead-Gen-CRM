@@ -101,7 +101,7 @@ export default function LandingPage() {
 
     const fetchLead = async () => {
       try {
-        const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+        const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
         const res = await fetch(`${apiBaseUrl}/api/avatar12/leads/${leadId}`);
         if (res.ok) {
           const data = await res.json();
@@ -135,7 +135,7 @@ export default function LandingPage() {
     setFormData(prev => ({ ...prev, [name]: value }));
     if (!formStarted) {
       setFormStarted(true);
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+      const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
       fetch(`${apiBaseUrl}/api/funnel-events/form_started`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lead_id: leadId }),
@@ -146,7 +146,7 @@ export default function LandingPage() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setFormSubmitted(true);
-    const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+    const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
     try {
       await fetch(`${apiBaseUrl}/api/funnel-events/form_submitted`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -158,7 +158,7 @@ export default function LandingPage() {
   const handleBookMeeting = async () => {
     if (!selectedDate || !selectedTime) return;
     setBookingSubmitting(true);
-    const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+    const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
     const dateStr = selectedDate.toISOString().split('T')[0];
     try {
       await fetch(`${apiBaseUrl}/api/funnel-events/meeting_booked`, {

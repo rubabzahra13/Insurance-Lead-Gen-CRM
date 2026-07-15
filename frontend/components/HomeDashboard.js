@@ -19,6 +19,8 @@ import { AVATAR_LABELS, LEAD_PATH, pipelineStageLabel } from '../lib/avatar-labe
 import { DASHBOARD_REFRESH_EVENT } from '../lib/dashboard-events';
 import { BUSINESS_COLORS, COLORS, INDIVIDUAL_COLORS, RGBA } from '../lib/colors';
 import { useIndividualSegment } from '../context/IndividualSegmentContext';
+import { API_CACHE_KEYS, fetchCachedJson, getApiCache, invalidateApiCache } from '../lib/api-cache';
+import { getApiBaseUrl } from '../lib/apiBaseUrl';
 
 const INDIVIDUAL_CHART_COLORS = {
   [AVATAR_LABELS.avatar1]: INDIVIDUAL_COLORS.avatar1,
@@ -66,16 +68,6 @@ function MetricCard({ href, icon, iconBg, iconColor, title, desc, kpis }) {
   );
 }
 
-async function fetchWithTimeout(url, ms = 10000) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ms);
-  try {
-    return await fetch(url, { signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 export default function HomeDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -84,25 +76,44 @@ export default function HomeDashboard() {
   const { setSegmentCounts } = useIndividualSegment();
 
   useEffect(() => {
-    const load = async () => {
-      setLoading(true);
+    const applySegmentCounts = (items) => {
+      setSegmentCounts({
+        avatar1: items.filter((lead) => lead.avatar_type === 'avatar1').length,
+        avatar2: items.filter((lead) => lead.avatar_type === 'avatar2').length,
+      });
+    };
+
+    const load = async ({ force = false } = {}) => {
+      if (!force) {
+        const cachedIndividuals = getApiCache(API_CACHE_KEYS.avatar12Leads);
+        const cachedBusiness = getApiCache(API_CACHE_KEYS.avatar3Leads);
+        if (cachedIndividuals && cachedBusiness) {
+          setIndividualLeads(cachedIndividuals.items || []);
+          setBusinessLeads(cachedBusiness.items || []);
+          applySegmentCounts(cachedIndividuals.items || []);
+          setLoading(false);
+          // Quiet background refresh
+          void load({ force: true });
+          return;
+        }
+        setLoading(true);
+      }
       setError(false);
       try {
-        const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
-        const [individualsRes, businessRes] = await Promise.all([
-          fetchWithTimeout(`${apiBaseUrl}/api/avatar12/leads`),
-          fetchWithTimeout(`${apiBaseUrl}/api/avatar3/leads`),
+        const apiBaseUrl = getApiBaseUrl();
+        const [individualsResult, businessResult] = await Promise.all([
+          fetchCachedJson(`${apiBaseUrl}/api/avatar12/leads`, {
+            cacheKey: API_CACHE_KEYS.avatar12Leads,
+            force: true,
+          }),
+          fetchCachedJson(`${apiBaseUrl}/api/avatar3/leads`, {
+            cacheKey: API_CACHE_KEYS.avatar3Leads,
+            force: true,
+          }),
         ]);
-        if (!individualsRes.ok || !businessRes.ok) throw new Error('Dashboard fetch failed');
-        const individualsData = await individualsRes.json();
-        const businessData = await businessRes.json();
-        setIndividualLeads(individualsData.items || []);
-        setBusinessLeads(businessData.items || []);
-        const items = individualsData.items || [];
-        setSegmentCounts({
-          avatar1: items.filter((lead) => lead.avatar_type === 'avatar1').length,
-          avatar2: items.filter((lead) => lead.avatar_type === 'avatar2').length,
-        });
+        setIndividualLeads(individualsResult.data.items || []);
+        setBusinessLeads(businessResult.data.items || []);
+        applySegmentCounts(individualsResult.data.items || []);
       } catch (err) {
         console.error(err);
         setError(true);
@@ -112,7 +123,10 @@ export default function HomeDashboard() {
     };
     load();
 
-    const onRefresh = () => load();
+    const onRefresh = () => {
+      invalidateApiCache([API_CACHE_KEYS.avatar12Leads, API_CACHE_KEYS.avatar3Leads]);
+      load({ force: true });
+    };
     window.addEventListener(DASHBOARD_REFRESH_EVENT, onRefresh);
     return () => window.removeEventListener(DASHBOARD_REFRESH_EVENT, onRefresh);
   }, [setSegmentCounts]);

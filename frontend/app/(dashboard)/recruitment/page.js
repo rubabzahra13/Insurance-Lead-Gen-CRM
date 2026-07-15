@@ -8,6 +8,14 @@ import { COLORS, GRADIENT, RGBA } from '../../../lib/colors';
 import IndividualSearchPanel from '../../../components/IndividualSearchPanel';
 import DotScrollArea from '../../../components/DotScrollArea';
 import { useRouter, useSearchParams } from 'next/navigation';
+import {
+  API_CACHE_KEYS,
+  fetchCachedJson,
+  getApiCache,
+  invalidateApiCache,
+  setApiCache,
+} from '../../../lib/api-cache';
+import { getApiBaseUrl } from '../../../lib/apiBaseUrl';
 import { 
   Send, Sparkles, AlertCircle, Search, MapPin, 
   Briefcase, Filter, X, RotateCcw, AlertTriangle, 
@@ -89,14 +97,25 @@ function RecruitmentWorkspaceContent() {
   }, [urlQuery]);
 
   // Fetch leads
-  const fetchLeads = async () => {
-    setLoading(true);
+  const fetchLeads = async ({ force = false } = {}) => {
+    if (!force) {
+      const cached = getApiCache(API_CACHE_KEYS.avatar12Leads);
+      if (cached) {
+        const items = Array.isArray(cached) ? cached : (cached.items || []);
+        setLeads(items);
+        setLoading(false);
+        void fetchLeads({ force: true });
+        return;
+      }
+    }
+    if (!force) setLoading(true);
     setError(false);
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
-      const res = await fetch(`${apiBaseUrl}/api/avatar12/leads`);
-      if (!res.ok) throw new Error('Failed to load leads');
-      const data = await res.json();
+      const apiBaseUrl = getApiBaseUrl();
+      const { data } = await fetchCachedJson(`${apiBaseUrl}/api/avatar12/leads`, {
+        cacheKey: API_CACHE_KEYS.avatar12Leads,
+        force: true,
+      });
       const items = Array.isArray(data) ? data : (data.items || []);
       setLeads(items);
     } catch (err) {
@@ -108,17 +127,30 @@ function RecruitmentWorkspaceContent() {
   };
 
   // Fetch funnel statistics
-  const fetchFunnelData = async () => {
-    setFunnelLoading(true);
+  const fetchFunnelData = async ({ force = false } = {}) => {
+    if (!force) {
+      const cached = getApiCache(API_CACHE_KEYS.funnel);
+      if (cached) {
+        setFunnelData({
+          chart: cached.chart || [],
+          items: cached.items || [],
+        });
+        setFunnelLoading(false);
+        void fetchFunnelData({ force: true });
+        return;
+      }
+    }
+    if (!force) setFunnelLoading(true);
     setFunnelError(false);
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
-      const res = await fetch(`${apiBaseUrl}/api/dashboard/funnel`);
-      if (!res.ok) throw new Error('Failed to load funnel analytics');
-      const data = await res.json();
+      const apiBaseUrl = getApiBaseUrl();
+      const { data } = await fetchCachedJson(`${apiBaseUrl}/api/dashboard/funnel`, {
+        cacheKey: API_CACHE_KEYS.funnel,
+        force: true,
+      });
       setFunnelData({
         chart: data.chart || [],
-        items: data.items || []
+        items: data.items || [],
       });
     } catch (err) {
       console.error(err);
@@ -157,7 +189,7 @@ function RecruitmentWorkspaceContent() {
       setActiveTab('profile');
 
       try {
-        const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+        const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
         
         // 1. Fetch Lead Details
         const leadRes = await fetch(`${apiBaseUrl}/api/avatar12/leads/${selectedLeadId}`);
@@ -268,7 +300,7 @@ function RecruitmentWorkspaceContent() {
     const channels = sendChannel === 'both' ? ['email', 'sms'] : [sendChannel];
 
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+      const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
       const sendRes = await fetch(`${apiBaseUrl}/api/avatar12/leads/${selectedLeadId}/messages/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -291,19 +323,23 @@ function RecruitmentWorkspaceContent() {
       showToast(deliveryNote ? `Message sent. ${deliveryNote}` : 'Outreach message sent successfully!');
       
       // Update local leads list status in-memory for instant feedback
-      setLeads(prev => prev.map(l => {
-        if (l.id === selectedLeadId) {
-          return {
-            ...l,
-            latest_draft: {
-              ...(l.latest_draft || {}),
-              status: 'sent',
-              message: draftMessage
-            }
-          };
-        }
-        return l;
-      }));
+      setLeads(prev => {
+        const next = prev.map(l => {
+          if (l.id === selectedLeadId) {
+            return {
+              ...l,
+              latest_draft: {
+                ...(l.latest_draft || {}),
+                status: 'sent',
+                message: draftMessage
+              }
+            };
+          }
+          return l;
+        });
+        setApiCache(API_CACHE_KEYS.avatar12Leads, { items: next });
+        return next;
+      });
 
       // Update selected lead details in-memory
       setSelectedLeadDetails(prev => {
@@ -578,7 +614,12 @@ function RecruitmentWorkspaceContent() {
         <div className="individual-section individual-section--source">
           <IndividualSearchPanel
             activeSegment={leadSegment}
-            onComplete={() => { fetchLeads(); fetchFunnelData(); setWorkspaceSection('leads'); }}
+            onComplete={() => {
+              invalidateApiCache([API_CACHE_KEYS.avatar12Leads, API_CACHE_KEYS.funnel]);
+              fetchLeads({ force: true });
+              fetchFunnelData({ force: true });
+              setWorkspaceSection('leads');
+            }}
           />
         </div>
       )}
@@ -722,7 +763,7 @@ function RecruitmentWorkspaceContent() {
                 <h5 style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: '4px' }}>Failed to load drafts</h5>
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Verify FastAPI backend server on port 8000 is active.</p>
               </div>
-              <button onClick={fetchLeads} className="chip-fallback-btn" style={{ fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <button onClick={() => fetchLeads({ force: true })} className="chip-fallback-btn" style={{ fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <RotateCcw size={12} />
                 Retry Fetch
               </button>

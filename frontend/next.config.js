@@ -16,11 +16,13 @@ const appSession = readAppSession();
 const nextConfig = {
   reactStrictMode: true,
   env: {
+    // On Vercel, default to same-origin "" so /api/* hits the FastAPI service rewrite.
     NEXT_PUBLIC_API_BASE_URL:
-      process.env.NEXT_PUBLIC_API_BASE_URL ||
-      process.env.NEXT_PUBIC_BASE_URL ||
-      process.env.NEXT_PUBLIC_BASE_URL ||
-      'http://localhost:8000',
+      process.env.NEXT_PUBLIC_API_BASE_URL !== undefined
+        ? process.env.NEXT_PUBLIC_API_BASE_URL
+        : process.env.NEXT_PUBIC_BASE_URL ||
+          process.env.NEXT_PUBLIC_BASE_URL ||
+          (process.env.VERCEL ? '' : 'http://localhost:8000'),
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL || '',
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '',
     NEXT_PUBLIC_APP_SESSION_STARTED: appSession.startedAt || '',

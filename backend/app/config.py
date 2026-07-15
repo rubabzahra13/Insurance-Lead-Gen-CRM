@@ -24,12 +24,14 @@ def _project_root() -> Path:
 def load_settings() -> Settings:
     load_dotenv(_project_root() / ".env")
 
-    api_key = (os.getenv("CLAUDE_API_KEY") or "").strip()
-    model = (os.getenv("CLAUDE_MODEL") or "").strip()
+    api_key = (
+        os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or ""
+    ).strip()
+    model = (os.getenv("CLAUDE_MODEL") or "").strip() or "claude-sonnet-4-6"
 
     if not api_key:
         raise ConfigError(
-            "CLAUDE_API_KEY is missing or empty in the root .env file."
+            "CLAUDE_API_KEY (or ANTHROPIC_API_KEY) is missing or empty."
         )
     if not model:
         raise ConfigError(

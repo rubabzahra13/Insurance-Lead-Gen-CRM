@@ -42,6 +42,8 @@ frontend_url = _get_env_any(
     "VERCEL_URL",
     default="http://localhost:3000",
 ).rstrip("/")
+if frontend_url and not frontend_url.startswith(("http://", "https://")):
+    frontend_url = f"https://{frontend_url}"
 
 origins = {
     "http://localhost:3000",
