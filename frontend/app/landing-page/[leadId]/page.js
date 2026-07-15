@@ -4,7 +4,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import { Video, Calendar, Send, FileText, CheckCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
 import { BRAND } from '../../../lib/brand';
-import { COLORS, GRADIENT } from '../../../lib/colors';
+import { COLORS, GRADIENT, RGBA } from '../../../lib/colors';
 
 function getDaysInMonthGrid(dateObj) {
   const year = dateObj.getFullYear();
@@ -186,7 +186,7 @@ export default function LandingPage() {
   if (error) {
     return (
       <div style={{ display: 'flex', height: '100vh', width: '100vw', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.white, color: COLORS.text, padding: '24px', textAlign: 'center' }}>
-        <div style={{ background: 'rgba(181, 74, 58, 0.06)', border: '1px solid rgba(181, 74, 58, 0.15)', padding: '32px', borderRadius: '16px', maxWidth: '480px' }}>
+        <div style={{ background: 'rgba(184, 107, 107, 0.06)', border: '1px solid rgba(184, 107, 107, 0.15)', padding: '32px', borderRadius: '16px', maxWidth: '480px' }}>
           <AlertTriangle size={48} style={{ color: COLORS.error, marginBottom: '16px' }} />
           <h2 style={{ fontSize: '1.5rem', fontWeight: 700, marginBottom: '12px' }}>Link Expired or Invalid</h2>
           <p style={{ color: 'var(--text-secondary)', lineHeight: '1.6', marginBottom: '24px' }}>
@@ -269,7 +269,7 @@ export default function LandingPage() {
                       value={formData[field.name]}
                       onChange={handleInputChange}
                       style={INPUT_STYLE}
-                      onFocus={(e) => { e.target.style.borderColor = COLORS.oldRose; e.target.style.boxShadow = '0 0 0 3px rgba(192,132,151,0.15)'; }}
+                      onFocus={(e) => { e.target.style.borderColor = COLORS.neutral; e.target.style.boxShadow = '0 0 0 3px rgba(75,85,99,0.12)'; }}
                       onBlur={(e) => { e.target.style.borderColor = COLORS.lightBlue; e.target.style.boxShadow = 'none'; }}
                     />
                   </div>
@@ -283,7 +283,7 @@ export default function LandingPage() {
                     value={formData.experience}
                     onChange={handleInputChange}
                     style={{ ...INPUT_STYLE, resize: 'vertical' }}
-                    onFocus={(e) => { e.target.style.borderColor = COLORS.oldRose; e.target.style.boxShadow = '0 0 0 3px rgba(192,132,151,0.15)'; }}
+                    onFocus={(e) => { e.target.style.borderColor = COLORS.neutral; e.target.style.boxShadow = '0 0 0 3px rgba(75,85,99,0.12)'; }}
                     onBlur={(e) => { e.target.style.borderColor = COLORS.lightBlue; e.target.style.boxShadow = 'none'; }}
                   ></textarea>
                 </div>
@@ -295,7 +295,7 @@ export default function LandingPage() {
                     color: '#ffffff', fontWeight: 700, border: 'none', borderRadius: '10px', 
                     padding: '14px', cursor: 'pointer', display: 'flex', alignItems: 'center',
                     justifyContent: 'center', gap: '8px',
-                    boxShadow: '0 4px 14px rgba(192, 132, 151, 0.2)', marginTop: '6px', fontSize: '1rem'
+                    boxShadow: '0 4px 14px rgba(75, 85, 99, 0.12)', marginTop: '6px', fontSize: '1rem'
                   }}
                 >
                   Continue to Booking <Send size={16} />
@@ -304,7 +304,7 @@ export default function LandingPage() {
             ) : bookingConfirmed ? (
               /* Booking Confirmation */
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: '16px', padding: '32px 0' }}>
-                <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: 'rgba(5, 150, 105, 0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: RGBA.neutral06, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <CheckCircle size={32} style={{ color: COLORS.success }} />
                 </div>
                 <h3 style={{ fontSize: '1.4rem', fontWeight: 700 }}>Meeting Confirmed!</h3>
@@ -464,9 +464,9 @@ export default function LandingPage() {
                                   border: 'none',
                                   borderRadius: '8px',
                                   background: isSelected
-                                    ? COLORS.oldRose
+                                    ? COLORS.neutral
                                     : isToday
-                                    ? '#eff6ff'
+                                    ? RGBA.neutral06
                                     : 'transparent',
                                   color: isSelected
                                     ? '#ffffff'
@@ -512,8 +512,8 @@ export default function LandingPage() {
                               padding: '10px 8px',
                               borderRadius: '8px',
                               cursor: 'pointer',
-                              background: isSelected ? COLORS.oldRose : '#ffffff',
-                              border: isSelected ? `1px solid ${COLORS.oldRose}` : `1px solid ${COLORS.lightBlue}`,
+                              background: isSelected ? COLORS.neutral : '#ffffff',
+                              border: isSelected ? `1px solid ${COLORS.neutral}` : `1px solid ${COLORS.lightBlue}`,
                               color: isSelected ? '#ffffff' : COLORS.text,
                               fontWeight: isSelected ? 700 : 500,
                               fontSize: '0.85rem',
@@ -533,12 +533,12 @@ export default function LandingPage() {
                   onClick={handleBookMeeting}
                   disabled={!selectedDate || !selectedTime || bookingSubmitting}
                   style={{ 
-                    background: (!selectedDate || !selectedTime) ? COLORS.lightBlue : COLORS.success, 
+                    background: (!selectedDate || !selectedTime) ? COLORS.lightBlue : GRADIENT, 
                     color: (!selectedDate || !selectedTime) ? COLORS.lightBlue : '#ffffff', 
                     fontWeight: 700, border: 'none', borderRadius: '10px', 
                     padding: '14px', cursor: (!selectedDate || !selectedTime) ? 'not-allowed' : 'pointer',
                     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-                    boxShadow: (selectedDate && selectedTime) ? '0 4px 14px rgba(5, 150, 105, 0.2)' : 'none',
+                    boxShadow: (selectedDate && selectedTime) ? '0 4px 14px rgba(15, 118, 110, 0.18)' : 'none',
                     marginTop: '4px', fontSize: '1rem', transition: 'all 0.2s ease',
                     width: '100%'
                   }}

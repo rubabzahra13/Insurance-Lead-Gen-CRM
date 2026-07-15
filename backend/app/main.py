@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
 
@@ -18,20 +20,51 @@ import os
 
 load_root_env()
 
-public_app_url = os.getenv("PUBLIC_APP_URL", "http://localhost:3000").rstrip("/")
-origins = [
+def _get_env_any(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value and value.strip():
+            return value.strip()
+
+    lowered = {key.lower(): value for key, value in os.environ.items()}
+    for name in names:
+        value = lowered.get(name.lower())
+        if value and value.strip():
+            return value.strip()
+
+    return default
+
+
+frontend_url = _get_env_any(
+    "PUBLIC_APP_URL",
+    "FRONTEND_BASE_URL",
+    "NEXT_PUBLIC_FRONTEND_URL",
+    "VERCEL_URL",
+    default="http://localhost:3000",
+).rstrip("/")
+
+origins = {
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-]
-if public_app_url not in origins:
-    origins.append(public_app_url)
+    frontend_url,
+}
+origins.discard("")
 
-app = FastAPI(title="LeadGen API")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    yield
+    from app.routes.scrape import shutdown_scrape_jobs
+
+    await shutdown_scrape_jobs()
+
+
+app = FastAPI(title="LeadGen API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    # Allow any local dev port (e.g. 3001, 3010 when 3000 is busy)
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+    # Allow any local dev port, plus common deployed frontend hosts.
+    allow_origin_regex=r"^(https://.*\.vercel\.app|https://.*\.ngrok-free\.(app|dev|io)|http://(localhost|127\.0\.0\.1):\d+)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -3,7 +3,7 @@ import { PALETTE } from './colors';
 export const BRAND = {
   name: 'InsureLead',
   fullName: 'InsureLead CRM',
-  tagline: 'Insurance lead generation & outreach',
+  tagline: 'Source, qualify, and convert insurance leads',
   senderName: 'InsureLead Partners',
   teamName: 'The InsureLead Team',
   logoInitials: 'IL',

@@ -1,16 +1,18 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, Suspense } from 'react';
-import { individualLabel } from '../../../lib/avatar-labels';
+import { individualShortLabel } from '../../../lib/avatar-labels';
+import { LEAD_SEGMENTS, useIndividualSegment } from '../../../context/IndividualSegmentContext';
 import { BRAND } from '../../../lib/brand';
 import { COLORS, GRADIENT, RGBA } from '../../../lib/colors';
 import IndividualSearchPanel from '../../../components/IndividualSearchPanel';
+import DotScrollArea from '../../../components/DotScrollArea';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { 
   Send, Sparkles, AlertCircle, Search, MapPin, 
   Briefcase, Filter, X, RotateCcw, AlertTriangle, 
   CheckCircle2, ArrowUpRight, User, FileText, ChevronRight, Loader2,
-  Clock, Activity, MessageSquare, BarChart3, TrendingUp, Calendar, ArrowUpDown
+  Clock, Activity, MessageSquare, TrendingUp, ArrowUpDown
 } from 'lucide-react';
 
 const SORT_OPTIONS = [
@@ -21,6 +23,15 @@ const SORT_OPTIONS = [
   { value: 'company_asc', label: 'Company A → Z' },
   { value: 'status', label: 'Outreach status' },
 ];
+
+function stripEmDashes(text) {
+  if (!text) return '';
+  return text.replace(/\s*[\u2014\u2013]\s*/g, ', ').trim();
+}
+
+function formatLeadInsight(text) {
+  return stripEmDashes(text);
+}
 
 function RecruitmentWorkspaceContent() {
   const router = useRouter();
@@ -39,14 +50,16 @@ function RecruitmentWorkspaceContent() {
   const [funnelData, setFunnelData] = useState({ chart: [], items: [] });
   const [funnelLoading, setFunnelLoading] = useState(true);
   const [funnelError, setFunnelError] = useState(false);
-  const [aggregateAvatarFilter, setAggregateAvatarFilter] = useState('all'); // 'all' | 'avatar1' | 'avatar2'
+  const { leadSegment, setSegmentCounts } = useIndividualSegment();
 
   // Filters state
   const [textSearch, setTextSearch] = useState(urlQuery);
-  const [avatarFilter, setAvatarFilter] = useState('all'); // 'all' | 'avatar1' | 'avatar2'
   const [statusFilter, setStatusFilter] = useState('all'); // 'all' | 'draft' | 'sent' | 'failed'
   const [sortBy, setSortBy] = useState('newest');
-  const [workspaceSection, setWorkspaceSection] = useState('leads'); // source | leads | analytics
+  const urlView = searchParams.get('view');
+  const [workspaceSection, setWorkspaceSection] = useState(
+    urlView === 'source' || urlView === 'analytics' ? urlView : 'leads'
+  ); // source | leads | analytics
   const [listFiltersOpen, setListFiltersOpen] = useState(false);
 
   // Right pane details state
@@ -120,6 +133,13 @@ function RecruitmentWorkspaceContent() {
     fetchFunnelData();
   }, []);
 
+  useEffect(() => {
+    setSegmentCounts({
+      avatar1: leads.filter((lead) => lead.avatar_type === 'avatar1').length,
+      avatar2: leads.filter((lead) => lead.avatar_type === 'avatar2').length,
+    });
+  }, [leads, setSegmentCounts]);
+
   // Fetch selected lead details & latest draft when selectedLeadId changes
   useEffect(() => {
     if (!selectedLeadId) {
@@ -152,14 +172,14 @@ function RecruitmentWorkspaceContent() {
         
         if (draftRes.ok) {
           const draftData = await draftRes.json();
-          setDraftMessage(draftData.message || '');
+          setDraftMessage(stripEmDashes(draftData.message || ''));
           setDraftReasoning(draftData.reasoning || '');
         } else if (draftRes.status === 404) {
           // If latest drafts endpoint 404s, fall back to check drafts list in lead detail
           const draftsList = leadData.drafts || [];
           if (draftsList.length > 0) {
             const latest = draftsList[draftsList.length - 1];
-            setDraftMessage(latest.message || '');
+            setDraftMessage(stripEmDashes(latest.message || ''));
             setDraftReasoning(latest.reasoning || '');
           } else {
             setNoDraftExists(true);
@@ -180,6 +200,14 @@ function RecruitmentWorkspaceContent() {
     loadRightPaneData();
   }, [selectedLeadId]);
 
+  useEffect(() => {
+    if (activeTab !== 'history' || !selectedLeadDetails) return;
+    const status = selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft';
+    if (status !== 'sent') {
+      setActiveTab('compose');
+    }
+  }, [activeTab, selectedLeadDetails]);
+
   // Update URL search parameters when selecting a lead
   const handleSelectLead = (leadId) => {
     const params = new URLSearchParams(searchParams.toString());
@@ -196,10 +224,18 @@ function RecruitmentWorkspaceContent() {
     router.push(`?${params.toString()}`);
   };
 
+  // Clear selected lead when switching between job seekers and upgraders
+  useEffect(() => {
+    if (!selectedLeadId) return;
+    const lead = leads.find((item) => String(item.id) === String(selectedLeadId));
+    if (lead && lead.avatar_type !== leadSegment) {
+      handleSelectLead('');
+    }
+  }, [leadSegment, selectedLeadId, leads]);
+
   // Reset Filters
   const handleResetFilters = () => {
     setTextSearch('');
-    setAvatarFilter('all');
     setStatusFilter('all');
     setSortBy('newest');
     
@@ -315,7 +351,7 @@ function RecruitmentWorkspaceContent() {
         }
       }
 
-      if (avatarFilter !== 'all' && lead.avatar_type !== avatarFilter) {
+      if (lead.avatar_type !== leadSegment) {
         return false;
       }
 
@@ -352,13 +388,10 @@ function RecruitmentWorkspaceContent() {
     });
 
     return sorted;
-  }, [leads, textSearch, avatarFilter, statusFilter, sortBy]);
+  }, [leads, textSearch, leadSegment, statusFilter, sortBy]);
 
-  // Calculate aggregate funnel metrics filterable by avatar type
-  const aggregateItems = funnelData.items.filter(item => {
-    if (aggregateAvatarFilter === 'all') return true;
-    return item.avatar_type === aggregateAvatarFilter;
-  });
+  // Calculate aggregate funnel metrics for the active segment
+  const aggregateItems = funnelData.items.filter((item) => item.avatar_type === leadSegment);
 
   const totals = aggregateItems.reduce((acc, item) => {
     acc.link_clicked += item.link_clicked || 0;
@@ -368,30 +401,29 @@ function RecruitmentWorkspaceContent() {
     return acc;
   }, { link_clicked: 0, form_started: 0, form_submitted: 0, meeting_booked: 0 });
 
-  const maxVal = Math.max(totals.link_clicked, 1);
-  const percentStart = totals.link_clicked ? Math.round((totals.form_started / totals.link_clicked) * 100) : 0;
-  const percentSubmit = totals.form_started ? Math.round((totals.form_submitted / totals.form_started) * 100) : 0;
-  const percentBook = totals.form_submitted ? Math.round((totals.meeting_booked / totals.form_submitted) * 100) : 0;
-
   const activeFilterCount = [
     textSearch,
-    avatarFilter !== 'all' ? avatarFilter : '',
     statusFilter !== 'all' ? statusFilter : '',
-    sortBy !== 'newest' ? sortBy : '',
   ].filter(Boolean).length;
 
+  const activeSegmentMeta = LEAD_SEGMENTS.find((segment) => segment.id === leadSegment) || LEAD_SEGMENTS[0];
+
   const workspaceSections = [
-    { id: 'leads', label: 'Pipeline', icon: User, desc: 'Browse leads and run outreach' },
-    { id: 'source', label: 'Source', icon: Search, desc: 'Find new individual leads' },
-    { id: 'analytics', label: 'Analytics', icon: BarChart3, desc: 'Funnel conversion metrics' },
+    { id: 'source', label: 'Find New Leads', icon: Search, desc: 'Search for and source fresh individual prospects' },
+    { id: 'leads', label: 'Outreach Drafts', icon: FileText, desc: 'Review, edit, and send personalized outreach drafts' },
+    { id: 'analytics', label: 'Track Sent', icon: TrendingUp, desc: 'Monitor how sent drafts perform after delivery' },
   ];
 
   const leadDetailTabs = [
     { id: 'profile', label: 'Profile', icon: User },
     { id: 'compose', label: 'Compose', icon: MessageSquare },
-    { id: 'history', label: 'History', icon: Clock },
+    { id: 'history', label: 'Sent Review', icon: Clock, sentOnly: true },
     { id: 'funnel', label: 'Funnel', icon: Activity },
   ];
+
+  const latestDraftStatus = selectedLeadDetails?.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft';
+  const isLatestDraftSent = latestDraftStatus === 'sent';
+  const visibleLeadDetailTabs = leadDetailTabs.filter((tab) => !tab.sentOnly || isLatestDraftSent);
 
   const hasAnyFunnelActivity = totals.link_clicked > 0 || totals.form_started > 0 || totals.form_submitted > 0 || totals.meeting_booked > 0;
 
@@ -400,7 +432,7 @@ function RecruitmentWorkspaceContent() {
       return (
         <div className="individual-analytics-loading">
           <Loader2 className="animate-spin" size={32} style={{ color: COLORS.oldRose }} />
-          <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Loading funnel analytics...</span>
+          <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Loading sent draft tracking...</span>
         </div>
       );
     }
@@ -408,164 +440,106 @@ function RecruitmentWorkspaceContent() {
       return (
         <div className="individual-analytics-loading">
           <AlertTriangle size={36} style={{ color: COLORS.error }} />
-          <h4 style={{ fontWeight: 600 }}>Failed to load funnel analytics</h4>
+          <h4 style={{ fontWeight: 600 }}>Failed to load sent draft tracking</h4>
           <button type="button" onClick={fetchFunnelData} className="chip-fallback-btn">Retry Load</button>
         </div>
       );
     }
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+      <div className="individual-analytics">
+        <header className="individual-analytics__header">
           <div>
-            <h3 style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <BarChart3 size={24} style={{ color: COLORS.oldRose }} />
-              Individual Leads Funnel
+            <h3 className="individual-analytics__title">
+              <TrendingUp size={20} aria-hidden="true" />
+              Sent Draft Performance
             </h3>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: '4px' }}>
-              Conversion metrics for job seekers and job upgraders.
+            <p className="individual-analytics__subtitle">
+              Track clicks, intake progress, and meetings for {activeSegmentMeta.label.toLowerCase()} you&apos;ve already sent.
             </p>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Filter size={14} style={{ color: 'var(--text-muted)' }} />
-            <div style={{ display: 'flex', background: COLORS.white, borderRadius: '8px', padding: '2px', border: '1px solid var(--border-color)' }}>
-              {['avatar1', 'avatar2'].map((type) => (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => setAggregateAvatarFilter(type)}
-                  style={{
-                    background: aggregateAvatarFilter === type ? 'var(--bg-secondary)' : 'transparent',
-                    border: 'none',
-                    borderRadius: '6px',
-                    color: aggregateAvatarFilter === type ? COLORS.oldRose : 'var(--text-secondary)',
-                    padding: '6px 12px',
-                    fontSize: '0.75rem',
-                    fontWeight: 600,
-                    cursor: 'pointer'
-                  }}
-                >
-                  {individualLabel(type)}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
+        </header>
 
         {!hasAnyFunnelActivity ? (
-          <div className="glass-card" style={{ padding: '60px 40px', textAlign: 'center', display: 'flex', flexDirection: 'column', gap: '16px', alignItems: 'center', border: '1px dashed var(--border-color)' }}>
-            <TrendingUp size={48} style={{ color: 'var(--text-muted)', opacity: 0.6 }} />
+          <div className="individual-analytics__empty glass-card">
+            <TrendingUp size={40} aria-hidden="true" />
             <div>
-              <h4 style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>
-                No Funnel Activity Recorded Yet
-              </h4>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', maxWidth: '400px', margin: '0 auto', lineHeight: '1.5' }}>
-                Candidates haven&apos;t interacted with outreach landing pages yet. Sourced leads will trigger click, intake progress, and calendar booking events as they respond.
+              <h4>No sent draft activity yet</h4>
+              <p>
+                Once you send {activeSegmentMeta.label.toLowerCase()} outreach, responses will show up here.
               </p>
             </div>
           </div>
         ) : (
-          <div className="glass-card" style={{ padding: '24px', border: '1px solid var(--border-color)' }}>
-            <h4 style={{ fontSize: '0.95rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', marginBottom: '24px' }}>
-              Conversion Funnel Stages
-            </h4>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              {[
-                { stage: 'Link Clicked', count: totals.link_clicked, color: COLORS.oldRose, percentage: 100, suffix: 'clicks' },
-                { stage: 'Form Started', count: totals.form_started, color: COLORS.accentDark, percentage: percentStart, suffix: 'started' },
-                { stage: 'Form Submitted', count: totals.form_submitted, color: COLORS.powderBlush, percentage: percentSubmit, suffix: 'submitted' },
-                { stage: 'Meeting Booked', count: totals.meeting_booked, color: COLORS.success, percentage: percentBook, suffix: 'booked' }
-              ].map((step, idx) => {
-                const widthPercent = maxVal > 0 ? (step.count / maxVal) * 100 : 0;
-                return (
-                  <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.85rem' }}>
-                      <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{step.stage}</span>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        <span style={{ color: 'var(--text-secondary)', fontWeight: 700 }}>
-                          {step.count} {step.suffix}
-                        </span>
-                        {idx > 0 && (
-                          <span style={{ color: step.color, fontWeight: 600, fontSize: '0.75rem', background: COLORS.white, padding: '2px 6px', borderRadius: '4px', border: '1px solid var(--border-color)' }}>
-                            {step.percentage}% Conv
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div style={{ width: '100%', height: '24px', background: COLORS.white, border: '1px solid var(--border-color)', borderRadius: '6px', overflow: 'hidden' }}>
-                      <div style={{ width: `${widthPercent}%`, height: '100%', background: `linear-gradient(to right, ${step.color}33, ${step.color})`, transition: 'width 0.4s ease-out', borderRadius: '4px' }} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+          <div className="individual-analytics__metrics" role="list" aria-label="Response stages after send">
+            {[
+              { stage: 'Clicks', count: totals.link_clicked, suffix: 'clicks' },
+              { stage: 'Starts', count: totals.form_started, suffix: 'started' },
+              { stage: 'Submits', count: totals.form_submitted, suffix: 'submitted' },
+              { stage: 'Booked', count: totals.meeting_booked, suffix: 'booked' },
+            ].map((step) => (
+              <div key={step.stage} className="individual-analytics__metric" role="listitem">
+                <span className="individual-analytics__metric-label">{step.stage}</span>
+                <span className="individual-analytics__metric-value">{step.count}</span>
+                <span className="individual-analytics__metric-suffix">{step.suffix}</span>
+              </div>
+            ))}
           </div>
         )}
 
-        <div className="glass-card" style={{ padding: '0px', border: '1px solid var(--border-color)', overflow: 'hidden' }}>
-          <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h4 style={{ fontSize: '0.95rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)' }}>
-              Candidate Activity Breakdown
-            </h4>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              Showing {aggregateItems.length} records
-            </span>
+        <div className="glass-card individual-analytics__table-card">
+          <div className="individual-analytics__table-head">
+            <h4>Sent draft activity by candidate</h4>
+            <span>{aggregateItems.length} records</span>
           </div>
-          <div className="results-table-scroll">
-            <table className="results-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <DotScrollArea className="individual-analytics__table-scroll results-table-scroll">
+            <table className="results-table results-table--compact">
               <thead>
                 <tr>
                   <th>Candidate</th>
                   <th>Type</th>
-                  <th style={{ textAlign: 'center' }}>Clicks</th>
-                  <th style={{ textAlign: 'center' }}>Starts</th>
-                  <th style={{ textAlign: 'center' }}>Submits</th>
-                  <th style={{ textAlign: 'center' }}>Booked</th>
-                  <th>Last Activity</th>
+                  <th className="results-table__num">Clicks</th>
+                  <th className="results-table__num">Starts</th>
+                  <th className="results-table__num">Submits</th>
+                  <th className="results-table__num">Booked</th>
+                  <th>Last activity</th>
                 </tr>
               </thead>
               <tbody>
                 {aggregateItems.length === 0 ? (
                   <tr>
-                    <td colSpan="7" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
-                      No candidates found for this lead type.
+                    <td colSpan="7" className="results-table__empty">
+                      No {activeSegmentMeta.label.toLowerCase()} with sent draft activity yet.
                     </td>
                   </tr>
                 ) : (
                   aggregateItems.map((item) => (
-                    <tr key={item.lead_id} onClick={() => { handleSelectLead(item.lead_id); setWorkspaceSection('leads'); }} style={{ cursor: 'pointer' }}>
+                    <tr
+                      key={item.lead_id}
+                      onClick={() => { handleSelectLead(item.lead_id); setWorkspaceSection('leads'); }}
+                      className="results-table__row--clickable"
+                    >
                       <td>
-                        <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{item.name}</div>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '240px' }}>
-                          {item.headline || item.role}
-                        </div>
+                        <div className="results-table__primary">{item.name}</div>
+                        <div className="results-table__secondary">{item.headline || item.role}</div>
                       </td>
                       <td>
-                        <span style={{
-                          fontSize: '0.7rem', fontWeight: 600, padding: '2px 6px', borderRadius: '4px',
-                          border: `1px solid ${item.avatar_type === 'avatar1' ? 'rgba(192, 132, 151, 0.2)' : 'rgba(247, 175, 157, 0.2)'}`,
-                          color: item.avatar_type === 'avatar1' ? COLORS.oldRose : COLORS.powderBlush
-                        }}>
-                          {individualLabel(item.avatar_type)}
-                        </span>
+                        <span className="segment-type-badge">{individualShortLabel(item.avatar_type)}</span>
                       </td>
-                      <td style={{ textAlign: 'center', fontWeight: item.link_clicked ? '700' : '400', color: item.link_clicked ? COLORS.oldRose : 'var(--text-muted)' }}>{item.link_clicked || 0}</td>
-                      <td style={{ textAlign: 'center', fontWeight: item.form_started ? '700' : '400', color: item.form_started ? COLORS.accentDark : 'var(--text-muted)' }}>{item.form_started || 0}</td>
-                      <td style={{ textAlign: 'center', fontWeight: item.form_submitted ? '700' : '400', color: item.form_submitted ? COLORS.powderBlush : 'var(--text-muted)' }}>{item.form_submitted || 0}</td>
-                      <td style={{ textAlign: 'center', fontWeight: item.meeting_booked ? '700' : '400', color: item.meeting_booked ? COLORS.success : 'var(--text-muted)' }}>{item.meeting_booked || 0}</td>
-                      <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                        {item.latest_event_at ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            <Calendar size={12} />
-                            <span>{new Date(item.latest_event_at).toLocaleString()}</span>
-                          </div>
-                        ) : 'N/A'}
+                      <td className="results-table__num">{item.link_clicked || 0}</td>
+                      <td className="results-table__num">{item.form_started || 0}</td>
+                      <td className="results-table__num">{item.form_submitted || 0}</td>
+                      <td className="results-table__num">{item.meeting_booked || 0}</td>
+                      <td className="results-table__muted">
+                        {item.latest_event_at
+                          ? new Date(item.latest_event_at).toLocaleDateString()
+                          : 'N/A'}
                       </td>
                     </tr>
                   ))
                 )}
               </tbody>
             </table>
-          </div>
+          </DotScrollArea>
         </div>
       </div>
     );
@@ -580,27 +554,32 @@ function RecruitmentWorkspaceContent() {
         </div>
       )}
 
-      <nav className="individual-workspace-nav" aria-label="Individual workspace sections">
-        {workspaceSections.map((section) => {
-          const SectionIcon = section.icon;
-          const isActive = workspaceSection === section.id;
-          return (
-            <button
-              key={section.id}
-              type="button"
-              className={`individual-workspace-nav__tab${isActive ? ' individual-workspace-nav__tab--active' : ''}`}
-              onClick={() => setWorkspaceSection(section.id)}
-            >
-              <SectionIcon size={16} />
-              <span>{section.label}</span>
-            </button>
-          );
-        })}
-      </nav>
+      <header className="individual-page-header">
+        <nav className="individual-workspace-nav" aria-label="Individual outreach workflow">
+          {workspaceSections.map((section) => {
+            const SectionIcon = section.icon;
+            const isActive = workspaceSection === section.id;
+            return (
+              <button
+                key={section.id}
+                type="button"
+                className={`individual-workspace-nav__tab${isActive ? ' individual-workspace-nav__tab--active' : ''}`}
+                onClick={() => setWorkspaceSection(section.id)}
+              >
+                <SectionIcon size={16} />
+                <span>{section.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </header>
 
       {workspaceSection === 'source' && (
         <div className="individual-section individual-section--source">
-          <IndividualSearchPanel onComplete={() => { fetchLeads(); fetchFunnelData(); setWorkspaceSection('leads'); }} />
+          <IndividualSearchPanel
+            activeSegment={leadSegment}
+            onComplete={() => { fetchLeads(); fetchFunnelData(); setWorkspaceSection('leads'); }}
+          />
         </div>
       )}
 
@@ -611,75 +590,70 @@ function RecruitmentWorkspaceContent() {
         {/* List header: search + collapsible filters */}
         <div className="individual-list-header">
           <div className="individual-list-header__top">
-            <h3 className="individual-list-header__title">Leads</h3>
-            <span className="individual-list-header__count">{filteredLeads.length} shown</span>
+            <h3 className="individual-list-header__title">Outreach Drafts</h3>
+            <span className="individual-list-header__count">{filteredLeads.length} · {activeSegmentMeta.shortLabel}</span>
           </div>
 
-          <div style={{ position: 'relative', width: '100%' }}>
-            <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-            <input 
-              type="text" 
-              placeholder="Search leads, roles, prompt..." 
-              value={textSearch}
-              onChange={handleSearchChange}
-              className="individual-list-search"
-            />
-            {textSearch && (
-              <button 
-                type="button"
-                onClick={() => {
-                  setTextSearch('');
-                  const params = new URLSearchParams(searchParams.toString());
-                  params.delete('q');
-                  router.push(`?${params.toString()}`);
-                }}
-                className="individual-list-search__clear"
-              >
-                <X size={14} />
-              </button>
-            )}
-          </div>
-
-          <button
-            type="button"
-            className="individual-list-filters-toggle"
-            onClick={() => setListFiltersOpen((open) => !open)}
-            aria-expanded={listFiltersOpen}
-          >
-            <Filter size={14} />
-            Filters
-            {activeFilterCount > 0 && (
-              <span className="individual-list-filters-toggle__badge">{activeFilterCount}</span>
-            )}
-          </button>
-
-          {listFiltersOpen && (
-          <div className="individual-list-filters-panel">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 500 }}>Type:</span>
-            <div style={{ display: 'flex', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', padding: '2px', border: '1px solid var(--border-color)' }}>
-              {['avatar1', 'avatar2'].map((type) => (
-                <button
-                  key={type}
-                  onClick={() => setAvatarFilter(type)}
-                  style={{
-                    background: avatarFilter === type ? '#ffffff' : 'transparent',
-                    border: avatarFilter === type ? '1px solid var(--border-color)' : '1px solid transparent',
-                    borderRadius: '6px',
-                    color: avatarFilter === type ? COLORS.oldRose : 'var(--text-secondary)',
-                    padding: '4px 10px',
-                    fontSize: '0.7rem',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    textTransform: 'capitalize'
+          <div className="individual-list-toolbar">
+            <div className="individual-list-toolbar__search">
+              <Search size={16} className="individual-list-toolbar__search-icon" aria-hidden="true" />
+              <input 
+                type="text" 
+                placeholder="Search name or role…" 
+                value={textSearch}
+                onChange={handleSearchChange}
+                className="individual-list-search"
+              />
+              {textSearch && (
+                <button 
+                  type="button"
+                  onClick={() => {
+                    setTextSearch('');
+                    const params = new URLSearchParams(searchParams.toString());
+                    params.delete('q');
+                    router.push(`?${params.toString()}`);
                   }}
+                  className="individual-list-search__clear"
+                  aria-label="Clear search"
                 >
-                  {individualLabel(type)}
+                  <X size={14} />
                 </button>
-              ))}
+              )}
+            </div>
+
+            <div className="individual-list-toolbar__actions">
+              <button
+                type="button"
+                className={`individual-list-icon-btn${listFiltersOpen ? ' individual-list-icon-btn--active' : ''}`}
+                onClick={() => setListFiltersOpen((open) => !open)}
+                aria-expanded={listFiltersOpen}
+                aria-label={`Filters${activeFilterCount > 0 ? `, ${activeFilterCount} active` : ''}`}
+              >
+                <Filter size={16} />
+                {activeFilterCount > 0 && (
+                  <span className="individual-list-filters-toggle__badge">{activeFilterCount}</span>
+                )}
+              </button>
+
+              <div className="individual-list-sort-wrap">
+                <select
+                  className="individual-list-sort"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  aria-label={`Sort drafts: ${SORT_OPTIONS.find((option) => option.value === sortBy)?.label || 'Newest first'}`}
+                  title={SORT_OPTIONS.find((option) => option.value === sortBy)?.label || 'Newest first'}
+                >
+                  {SORT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                <ArrowUpDown size={16} className="individual-list-sort-wrap__icon" aria-hidden="true" />
+              </div>
             </div>
           </div>
 
+          {listFiltersOpen && (
+          <div className="individual-list-filters-panel">
           {/* Status Filter Selector */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
             <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 500 }}>Status:</span>
@@ -706,37 +680,10 @@ function RecruitmentWorkspaceContent() {
             </div>
           </div>
 
-          {/* Sort selector */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <ArrowUpDown size={13} />
-              Sort by:
-            </span>
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-              style={{
-                background: '#ffffff',
-                border: '1px solid var(--border-color)',
-                borderRadius: '8px',
-                color: 'var(--text-primary)',
-                padding: '4px 8px',
-                fontSize: '0.72rem',
-                outline: 'none',
-                maxWidth: '180px',
-                fontWeight: 500,
-              }}
-            >
-              {SORT_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </div>
-
           {/* Filter stats & clear option */}
-          {(textSearch || avatarFilter !== 'all' || statusFilter !== 'all' || sortBy !== 'newest') && (
+          {(textSearch || statusFilter !== 'all' || sortBy !== 'newest') && (
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              <span>Filtered: {filteredLeads.length} of {leads.length} leads</span>
+              <span>Filtered: {filteredLeads.length} of {leads.length} drafts</span>
               <button 
                 type="button"
                 onClick={handleResetFilters}
@@ -752,7 +699,7 @@ function RecruitmentWorkspaceContent() {
         </div>
 
         {/* Scrollable list content */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
+        <DotScrollArea className="workspace-list-pane__scroll">
           {loading ? (
             /* Skeleton list loader */
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -770,9 +717,9 @@ function RecruitmentWorkspaceContent() {
           ) : error ? (
             /* Error state with retry */
             <div style={{ textAlign: 'center', padding: '32px 16px', display: 'flex', flexDirection: 'column', gap: '16px', alignItems: 'center' }}>
-              <AlertTriangle size={32} style={{ color: '#ef4444' }} />
+              <AlertTriangle size={32} style={{ color: COLORS.error }} />
               <div>
-                <h5 style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: '4px' }}>Failed to load leads</h5>
+                <h5 style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: '4px' }}>Failed to load drafts</h5>
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Verify FastAPI backend server on port 8000 is active.</p>
               </div>
               <button onClick={fetchLeads} className="chip-fallback-btn" style={{ fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -785,19 +732,19 @@ function RecruitmentWorkspaceContent() {
             <div style={{ textAlign: 'center', padding: '40px 16px', display: 'flex', flexDirection: 'column', gap: '16px', alignItems: 'center' }}>
               <Briefcase size={40} style={{ color: 'var(--text-muted)' }} />
               <div>
-                <h5 style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '6px' }}>No individual leads yet</h5>
+                <h5 style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '6px' }}>No {activeSegmentMeta.label.toLowerCase()} drafts yet</h5>
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', lineHeight: '1.4', maxWidth: '280px' }}>
-                  Use the search above to source business leads. Imported prospects will appear on the board below.
+                  Head to Find New Leads to search for {activeSegmentMeta.label.toLowerCase()}. New matches will appear here as drafts ready to review and send.
                 </p>
               </div>
-              <button onClick={() => router.push('/')} className="btn-primary" style={{ padding: '8px 16px', fontSize: '0.75rem' }}>
-                Go to Home
+              <button type="button" onClick={() => setWorkspaceSection('source')} className="btn-primary" style={{ padding: '8px 16px', fontSize: '0.75rem' }}>
+                Find new leads
               </button>
             </div>
           ) : filteredLeads.length === 0 ? (
             /* Empty state for active filter */
             <div style={{ textAlign: 'center', padding: '40px 16px', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-              No leads match your search criteria.
+              No drafts match your search or filters.
             </div>
           ) : (
             /* Leads list */
@@ -805,20 +752,19 @@ function RecruitmentWorkspaceContent() {
               {filteredLeads.map((lead) => {
                 const isActive = lead.id === selectedLeadId;
                 const draftStatus = lead.latest_draft?.status || 'draft';
-                const avatarLabel = individualLabel(lead.avatar_type);
                 
                 return (
                   <div
                     key={lead.id}
                     onClick={() => handleSelectLead(lead.id)}
                     style={{
-                      background: isActive ? 'rgba(192, 132, 151, 0.04)' : '#ffffff',
+                      background: isActive ? 'rgba(75, 85, 99, 0.04)' : '#ffffff',
                       border: `1px solid ${isActive ? COLORS.oldRose : 'var(--border-color)'}`,
                       borderRadius: '12px',
                       padding: '16px',
                       cursor: 'pointer',
                       transition: 'all 0.2s ease',
-                      boxShadow: isActive ? '0 0 0 3px rgba(192, 132, 151, 0.08)' : 'none'
+                      boxShadow: isActive ? '0 0 0 3px rgba(75, 85, 99, 0.08)' : 'none'
                     }}
                     onMouseEnter={(e) => {
                       if (!isActive) e.currentTarget.style.borderColor = 'var(--border-hover)';
@@ -841,14 +787,14 @@ function RecruitmentWorkspaceContent() {
                         padding: '2px 8px',
                         borderRadius: '6px',
                         border: `1px solid ${
-                          draftStatus === 'sent' ? 'rgba(74, 107, 92, 0.25)' : 
-                          draftStatus === 'failed' ? 'rgba(220, 38, 38, 0.25)' : 
-                          'rgba(192, 132, 151, 0.25)'
+                          draftStatus === 'sent' ? RGBA.success20 : 
+                          draftStatus === 'failed' ? 'rgba(184, 107, 107, 0.25)' : 
+                          'rgba(75, 85, 99, 0.25)'
                         }`,
                         background: `${
-                          draftStatus === 'sent' ? 'rgba(74, 107, 92, 0.06)' : 
-                          draftStatus === 'failed' ? 'rgba(220, 38, 38, 0.06)' : 
-                          'rgba(192, 132, 151, 0.06)'
+                          draftStatus === 'sent' ? RGBA.success06 : 
+                          draftStatus === 'failed' ? 'rgba(184, 107, 107, 0.06)' : 
+                          'rgba(75, 85, 99, 0.06)'
                         }`,
                         color: `${
                           draftStatus === 'sent' ? COLORS.success : 
@@ -884,19 +830,8 @@ function RecruitmentWorkspaceContent() {
                       </span>
 
                       {/* Avatar badge */}
-                      <span style={{
-                        fontWeight: 600,
-                        padding: '1px 6px',
-                        borderRadius: '4px',
-                        border: `1px solid ${
-                          lead.avatar_type === 'avatar1' ? 'rgba(192, 132, 151, 0.2)' : 'rgba(247, 175, 157, 0.2)'
-                        }`,
-                        background: `${
-                          lead.avatar_type === 'avatar1' ? 'rgba(192, 132, 151, 0.05)' : 'rgba(247, 175, 157, 0.05)'
-                        }`,
-                        color: lead.avatar_type === 'avatar1' ? COLORS.oldRose : COLORS.powderBlush
-                      }}>
-                        {avatarLabel}
+                      <span className="segment-type-badge">
+                        {individualShortLabel(lead.avatar_type)}
                       </span>
                     </div>
                   </div>
@@ -904,7 +839,7 @@ function RecruitmentWorkspaceContent() {
               })}
             </div>
           )}
-        </div>
+        </DotScrollArea>
       </div>
 
       {/* Right Pane: Selected Details or Aggregate Funnel Analytics Dashboard */}
@@ -938,21 +873,20 @@ function RecruitmentWorkspaceContent() {
                   <h3 className="individual-lead-detail__name">{selectedLeadDetails.name}</h3>
                   <div className="individual-lead-detail__meta">
                     <span className="individual-lead-detail__type-badge">
-                      {individualLabel(selectedLeadDetails.avatar_type)}
+                      {individualShortLabel(selectedLeadDetails.avatar_type)}
                     </span>
                     <span className={`individual-lead-detail__status individual-lead-detail__status--${(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft')}`}>
                       {selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft'}
                     </span>
                   </div>
                 </div>
-                <button type="button" onClick={() => handleSelectLead('')} className="individual-lead-detail__close">
-                  <X size={16} />
-                  Close
+                <button type="button" onClick={() => handleSelectLead('')} className="individual-lead-detail__close" aria-label="Close">
+                  <X size={18} />
                 </button>
               </div>
 
               <nav className="individual-lead-tabs" aria-label="Lead detail sections">
-                {leadDetailTabs.map((tab) => {
+                {visibleLeadDetailTabs.map((tab) => {
                   const TabIcon = tab.icon;
                   const isTabActive = activeTab === tab.id;
                   return (
@@ -969,37 +903,49 @@ function RecruitmentWorkspaceContent() {
                 })}
               </nav>
 
+              <DotScrollArea className="individual-lead-detail__body">
               {activeTab === 'profile' && (
-                <div className="glass-card individual-lead-profile" style={{ padding: '24px', border: '1px solid var(--border-color)' }}>
-                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                <div className="individual-lead-profile">
+                  <p className="individual-lead-profile__headline">
                     {selectedLeadDetails.headline || selectedLeadDetails.role || 'Sales Professional'}
                   </p>
-                  {selectedLeadDetails.company && (
-                    <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '8px' }}>
-                      Company: <span style={{ color: 'var(--text-primary)' }}>{selectedLeadDetails.company}</span>
-                    </p>
-                  )}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginTop: '12px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      <MapPin size={12} />
-                      {selectedLeadDetails.location || 'US'}
-                    </span>
+
+                  <dl className="individual-lead-profile__facts">
+                    {selectedLeadDetails.company && (
+                      <div className="individual-lead-profile__fact">
+                        <dt>Company</dt>
+                        <dd>{selectedLeadDetails.company}</dd>
+                      </div>
+                    )}
+                    <div className="individual-lead-profile__fact">
+                      <dt>Location</dt>
+                      <dd>{selectedLeadDetails.location || 'US'}</dd>
+                    </div>
                     {selectedLeadDetails.linkedin_url && (
-                      <a href={selectedLeadDetails.linkedin_url} target="_blank" rel="noreferrer" style={{ color: COLORS.oldRose, display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        LinkedIn Profile
-                        <ArrowUpRight size={12} />
-                      </a>
+                      <div className="individual-lead-profile__fact">
+                        <dt>LinkedIn</dt>
+                        <dd>
+                          <a
+                            href={selectedLeadDetails.linkedin_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="individual-lead-profile__link"
+                          >
+                            View profile
+                            <ArrowUpRight size={12} aria-hidden="true" />
+                          </a>
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
+
+                  <div className="individual-lead-profile__source">
+                    <span className="individual-lead-profile__source-label">Sourced via</span>
+                    <p>{selectedLeadDetails.source_query || 'No source query'}</p>
+                    {selectedLeadDetails.search_prompt && (
+                      <p className="individual-lead-profile__prompt">&ldquo;{selectedLeadDetails.search_prompt}&rdquo;</p>
                     )}
                   </div>
-                  <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '12px', fontStyle: 'italic' }}>
-                    Original Search Query: {selectedLeadDetails.source_query || 'no source query'}
-                  </div>
-                  {selectedLeadDetails.search_prompt && (
-                    <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-color)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                      <span>Source query prompt: </span>
-                      <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic' }}>&quot;{selectedLeadDetails.search_prompt}&quot;</span>
-                    </div>
-                  )}
                 </div>
               )}
 
@@ -1041,7 +987,7 @@ function RecruitmentWorkspaceContent() {
                         </>
                       )}
                       {noDraftExists && (
-                        <span style={{ marginLeft: 'auto', fontSize: '0.7rem', background: 'rgba(217, 119, 6, 0.08)', color: '#d97706', padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(217,119,6,0.15)', fontWeight: 600 }}>
+                        <span style={{ marginLeft: 'auto', fontSize: '0.7rem', background: RGBA.amber08, color: COLORS.warning, padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(180,83,9,0.15)', fontWeight: 600 }}>
                           No AI Draft
                         </span>
                       )}
@@ -1080,7 +1026,7 @@ function RecruitmentWorkspaceContent() {
                             padding: '4px 10px',
                             borderRadius: '6px',
                             border: sendChannel === ch ? `1px solid ${COLORS.oldRose}` : '1px solid var(--border-color)',
-                            background: sendChannel === ch ? 'rgba(192,132,151,0.08)' : '#fff',
+                            background: sendChannel === ch ? RGBA.neutral06 : '#fff',
                             color: sendChannel === ch ? COLORS.oldRose : 'var(--text-secondary)',
                             fontWeight: sendChannel === ch ? 600 : 500,
                             cursor: 'pointer',
@@ -1139,29 +1085,19 @@ function RecruitmentWorkspaceContent() {
                       }}
                     />
 
-                    {/* Bottom toolbar */}
-                    <div style={{ 
-                      padding: '12px 20px', 
-                      borderTop: '1px solid var(--border-color)', 
-                      background: COLORS.white,
-                      display: 'flex', 
-                      justifyContent: 'space-between', 
-                      alignItems: 'center' 
-                    }}>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    <div className="individual-compose-footer">
+                      <span className="individual-compose-footer__count">
                         {draftMessage.length} characters
                       </span>
-
                       {(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft') === 'sent' ? (
-                        <span style={{ display: 'flex', alignItems: 'center', gap: '6px', color: COLORS.success, fontSize: '0.85rem', fontWeight: 600 }}>
+                        <span className="individual-compose-footer__sent">
                           <CheckCircle2 size={16} />
                           Sent
                         </span>
                       ) : (
-                        <button 
-                          className="btn-primary" 
+                        <button
+                          className="btn-primary individual-compose-footer__send"
                           onClick={handleSendOutreach}
-                          style={{ padding: '10px 24px', fontSize: '0.85rem' }}
                         >
                           <Send size={14} />
                           Send
@@ -1170,32 +1106,32 @@ function RecruitmentWorkspaceContent() {
                     </div>
                   </div>
 
-                  {/* AI copy logic/reasoning */}
+                  {/* Lead profile insight from sourcing */}
                   {draftReasoning && (
                     <div style={{ padding: '16px 20px', background: COLORS.white, border: '1px solid var(--border-color)', borderRadius: '10px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', color: 'var(--text-primary)' }}>
-                        <Sparkles size={14} style={{ color: COLORS.powderBlush }} />
-                        <h4 style={{ fontWeight: 600, fontSize: '0.85rem' }}>AI Draft Logic</h4>
+                        <Sparkles size={14} style={{ color: COLORS.textMuted }} />
+                        <h4 style={{ fontWeight: 600, fontSize: '0.85rem' }}>What we learned about this lead</h4>
                       </div>
                       <p style={{ color: 'var(--text-secondary)', fontSize: '0.82rem', lineHeight: '1.5' }}>
-                        {draftReasoning}
+                        {formatLeadInsight(draftReasoning)}
                       </p>
                     </div>
                   )}
                 </div>
               )}
 
-              {/* 2. HISTORY TAB */}
-              {activeTab === 'history' && (
+              {/* Sent review — only available after outreach is sent */}
+              {activeTab === 'history' && isLatestDraftSent && (
                 <div className="glass-card" style={{ padding: '24px', border: '1px solid var(--border-color)' }}>
                   <h4 style={{ fontWeight: 600, fontSize: '1rem', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <Clock size={16} style={{ color: COLORS.oldRose }} />
-                    Outreach Draft History
+                    Sent Review
                   </h4>
                   
                   {(!selectedLeadDetails.drafts || selectedLeadDetails.drafts.length === 0) ? (
                     <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                      No outreach history recorded for this prospect.
+                      No sent outreach recorded for this prospect.
                     </div>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', position: 'relative', borderLeft: '1px solid var(--border-color)', paddingLeft: '20px', marginLeft: '10px' }}>
@@ -1230,7 +1166,7 @@ function RecruitmentWorkspaceContent() {
                             color: 'var(--text-secondary)',
                             whiteSpace: 'pre-wrap'
                           }}>
-                            {draft.message}
+                            {stripEmDashes(draft.message)}
                           </div>
                         </div>
                       ))}
@@ -1265,7 +1201,7 @@ function RecruitmentWorkspaceContent() {
                             width: '24px',
                             height: '24px',
                             borderRadius: '50%',
-                            background: step.completed ? 'rgba(74, 107, 92, 0.06)' : COLORS.white,
+                            background: step.completed ? RGBA.success06 : COLORS.white,
                             border: `2px solid ${step.completed ? COLORS.success : 'var(--border-color)'}`,
                             display: 'flex',
                             alignItems: 'center',
@@ -1299,16 +1235,17 @@ function RecruitmentWorkspaceContent() {
                 </div>
               )}
 
+              </DotScrollArea>
             </div>
           ) : null
         ) : (
           <div className="individual-pipeline-empty">
-            <User size={40} style={{ color: 'var(--text-muted)', opacity: 0.5 }} />
-            <h4>Select a lead to view details</h4>
-            <p>Choose a candidate from the list to review their profile, compose outreach, or track funnel progress.</p>
-            <button type="button" className="chip-fallback-btn" onClick={() => setWorkspaceSection('source')}>
+            <FileText size={40} style={{ color: 'var(--text-muted)', opacity: 0.5 }} />
+            <h4>Select a draft to work on</h4>
+            <p>Pick someone from your draft queue to review their profile, finish the message, or send outreach.</p>
+            <button type="button" className="btn-primary individual-pipeline-empty__cta" onClick={() => setWorkspaceSection('source')}>
               <Search size={14} />
-              Source new leads
+              Find new leads
             </button>
           </div>
         )}

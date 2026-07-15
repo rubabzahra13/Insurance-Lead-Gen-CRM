@@ -6,6 +6,8 @@ import { usePathname } from 'next/navigation';
 import { Home, Users, Building2 } from 'lucide-react';
 import { WORKSPACE_LABELS } from '../../lib/avatar-labels';
 import { BRAND } from '../../lib/brand';
+import { IndividualSegmentProvider } from '../../context/IndividualSegmentContext';
+import IndividualAudienceTabs from '../../components/IndividualAudienceTabs';
 
 export const SearchContext = createContext(null);
 
@@ -15,7 +17,7 @@ export default function DashboardLayout({ children }) {
   const getPageTitle = () => {
     switch (pathname) {
       case '/':
-        return 'Dashboard';
+        return 'Overview';
       case '/recruitment':
         return WORKSPACE_LABELS.individuals.title;
       case '/business':
@@ -27,11 +29,12 @@ export default function DashboardLayout({ children }) {
 
   const navItems = [
     { name: 'Dashboard', href: '/', icon: Home, shortName: 'Home' },
-    { name: WORKSPACE_LABELS.individuals.nav, href: '/recruitment', icon: Users, shortName: 'Individuals' },
-    { name: WORKSPACE_LABELS.businesses.nav, href: '/business', icon: Building2, shortName: 'Businesses' },
+    { name: WORKSPACE_LABELS.individuals.nav, href: '/recruitment', icon: Users, shortName: 'Ind. Leads' },
+    { name: WORKSPACE_LABELS.businesses.nav, href: '/business', icon: Building2, shortName: 'Bus. Leads' },
   ];
 
   return (
+    <IndividualSegmentProvider>
     <SearchContext.Provider value={null}>
       <div className="app-container">
         <aside className="sidebar">
@@ -65,6 +68,7 @@ export default function DashboardLayout({ children }) {
         <div className="main-wrapper">
           <header className="topbar">
             <h1 className="page-title">{getPageTitle()}</h1>
+            <IndividualAudienceTabs />
           </header>
 
           <main className="content-body">
@@ -91,5 +95,6 @@ export default function DashboardLayout({ children }) {
         </nav>
       </div>
     </SearchContext.Provider>
+    </IndividualSegmentProvider>
   );
 }

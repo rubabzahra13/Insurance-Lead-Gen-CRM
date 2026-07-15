@@ -1,22 +1,38 @@
 'use client';
 
-import React, { useState, useEffect, Suspense } from 'react';
+import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { WORKSPACE_LABELS, LEAD_PATH } from '../../../lib/avatar-labels';
-import { COLORS, GRADIENT, RGBA } from '../../../lib/colors';
+import { LEAD_PATH } from '../../../lib/avatar-labels';
+import { COLORS, RGBA, BUSINESS_STAGES } from '../../../lib/colors';
 import { 
   Search, Plus, MapPin, Star, Phone, Globe, 
   ChevronRight, Loader2, AlertTriangle, CheckCircle2, 
-  Move, KanbanSquare, Sliders, X, MessageSquare, 
-  Clock, PlusCircle, ArrowRight, Sparkles, Activity
+  KanbanSquare, Sliders, X, MessageSquare, Building2,
+  Clock, PlusCircle, ArrowRight, Sparkles, Activity, Table2
 } from 'lucide-react';
+
+const BUSINESS_WORKSPACE_SECTIONS = [
+  { id: 'source', label: 'Find New Leads', icon: Search },
+  { id: 'pipeline', label: 'Pipeline Board', icon: KanbanSquare },
+  { id: 'table', label: 'Table View', icon: Table2 },
+];
+
+const BUSINESS_SEARCH_HINTS = [
+  'Roofing contractors in Dallas',
+  'Dental practices in Austin',
+  'Auto repair shops in Houston',
+];
+
+const STAGES = BUSINESS_STAGES;
 
 function BusinessWorkspaceContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
 
   // Route states
   const urlQuery = searchParams.get('q') || '';
+  const urlView = searchParams.get('view');
   const initialLeadId = searchParams.get('leadId') || null;
 
   // Pipeline leads state
@@ -30,6 +46,7 @@ function BusinessWorkspaceContent() {
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState(false);
+  const [searchValidationError, setSearchValidationError] = useState('');
   const [showSearchPanel, setShowSearchPanel] = useState(false);
 
   // Detail slide-over states (Step 3.7)
@@ -45,17 +62,187 @@ function BusinessWorkspaceContent() {
 
   // Toast notification
   const [toast, setToast] = useState(null); // { message: string, type: 'success' | 'error' }
+  const [workspaceSection, setWorkspaceSection] = useState(
+    urlView === 'source' || urlQuery ? 'source' : urlView === 'table' ? 'table' : 'pipeline'
+  );
 
-  // Pipeline Stages definition
-  const STAGES = [
-    { id: 'new', label: 'New', color: COLORS.oldRose, bg: 'rgba(192, 132, 151, 0.08)' },
-    { id: 'qualified', label: 'Qualified', color: COLORS.accentDark, bg: 'rgba(192, 132, 151, 0.08)' },
-    { id: 'warm', label: 'Warm', color: COLORS.powderBlush, bg: 'rgba(247, 175, 157, 0.12)' },
-    { id: 'follow_up_later', label: 'Follow Up Later', color: COLORS.warning, bg: 'rgba(196, 137, 58, 0.08)' },
-    { id: 'sealed_won', label: 'Sealed/Won', color: COLORS.success, bg: 'rgba(74, 107, 92, 0.08)' },
-    { id: 'lost', label: 'Lost', color: COLORS.error, bg: 'rgba(181, 74, 58, 0.08)' },
-    { id: 'not_interested', label: 'Not Interested', color: COLORS.text, bg: 'rgba(34, 56, 67, 0.06)' }
-  ];
+  const filteredLeads = useMemo(
+    () => leads.filter((l) => !selectedQueryFilter || l.source_query === selectedQueryFilter),
+    [leads, selectedQueryFilter]
+  );
+
+  const renderQueryFilter = (idSuffix = '') => (
+    <div className="business-filter-inline">
+      <label className="business-filter-label" htmlFor={`business-query-filter${idSuffix}`}>Query</label>
+      <select
+        id={`business-query-filter${idSuffix}`}
+        className="business-filter-select"
+        value={selectedQueryFilter}
+        onChange={(e) => setSelectedQueryFilter(e.target.value)}
+      >
+        <option value="">All queries</option>
+        {Array.from(new Set(leads.map((lead) => lead.source_query).filter(Boolean))).map((q) => (
+          <option key={q} value={q}>{q}</option>
+        ))}
+      </select>
+      {selectedQueryFilter && (
+        <button type="button" className="business-filter-clear" onClick={() => setSelectedQueryFilter('')}>
+          Clear
+        </button>
+      )}
+    </div>
+  );
+
+  const renderKanbanBoard = () => (
+    <div className="pipeline-board" role="region" aria-label="Pipeline board">
+      {STAGES.map((stage) => {
+        const stageLeads = filteredLeads.filter((l) => l.pipeline_stage === stage.id);
+        return (
+          <section
+            key={stage.id}
+            className="pipeline-list"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => handleDrop(e, stage.id)}
+            style={{ '--list-accent': stage.color }}
+            aria-label={`${stage.label}, ${stageLeads.length} leads`}
+          >
+            <header className="pipeline-list__header">
+              <h3 className="pipeline-list__title">{stage.label}</h3>
+              <span className="pipeline-list__count">{stageLeads.length}</span>
+            </header>
+
+            <div className="pipeline-list__cards">
+              {stageLeads.length === 0 ? (
+                <p className="pipeline-list__empty">No leads in this stage</p>
+              ) : (
+                stageLeads.map((lead) => (
+                  <article
+                    key={lead.id}
+                    className={`pipeline-card${selectedLeadId === lead.id ? ' pipeline-card--active' : ''}`}
+                    style={{ '--card-accent': stage.color }}
+                    draggable
+                    onDragStart={(e) => {
+                      handleDragStart(e, lead.id, lead.pipeline_stage);
+                      e.currentTarget.style.opacity = '0.45';
+                    }}
+                    onDragEnd={(e) => {
+                      e.currentTarget.style.opacity = '';
+                    }}
+                    onClick={() => handleSelectLead(lead.id)}
+                  >
+                    <div className="pipeline-card__labels" aria-hidden="true">
+                      <span className="pipeline-card__label" />
+                    </div>
+
+                    <div className="pipeline-card__media">
+                      {lead.has_image ? (
+                        <img
+                          src={`${apiBaseUrl}/api/avatar3/leads/${lead.id}/image`}
+                          alt={lead.business_name}
+                          className="pipeline-card__image"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                            const placeholder = e.currentTarget.nextElementSibling;
+                            if (placeholder) placeholder.style.display = 'flex';
+                          }}
+                        />
+                      ) : null}
+                      <div
+                        className="pipeline-card__image-placeholder"
+                        style={{ display: lead.has_image ? 'none' : 'flex' }}
+                        aria-hidden="true"
+                      >
+                        <Building2 size={22} />
+                      </div>
+                    </div>
+
+                    <div className="pipeline-card__body">
+                      <h4 className="pipeline-card__title">{lead.business_name}</h4>
+                      {lead.source_query && (
+                        <p className="pipeline-card__subtitle">{lead.source_query}</p>
+                      )}
+                    </div>
+
+                    {(lead.rating || lead.address || lead.website) && (
+                      <div className="pipeline-card__badges">
+                        {lead.rating && (
+                          <span className="pipeline-card__badge" title="Rating">
+                            <Star size={12} style={{ fill: COLORS.warning, color: COLORS.warning }} />
+                            {lead.rating}
+                          </span>
+                        )}
+                        {lead.address && (
+                          <span className="pipeline-card__badge pipeline-card__badge--muted" title={lead.address}>
+                            <MapPin size={12} />
+                            <span className="pipeline-card__badge-text">{lead.address}</span>
+                          </span>
+                        )}
+                        {lead.website && (
+                          <a
+                            href={lead.website}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="pipeline-card__badge pipeline-card__badge--link"
+                            aria-label="Open website"
+                          >
+                            <Globe size={12} />
+                          </a>
+                        )}
+                      </div>
+                    )}
+
+                    <footer className="pipeline-card__footer">
+                      <label className="pipeline-card__move-label">
+                        <span className="pipeline-card__move-text">Move</span>
+                        <select
+                          className="pipeline-stage-select pipeline-card__move"
+                          value={lead.pipeline_stage}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => handleStageUpdate(lead.id, lead.pipeline_stage, e.target.value)}
+                          aria-label={`Move ${lead.business_name} to another stage`}
+                        >
+                          {STAGES.map((s) => (
+                            <option key={s.id} value={s.id}>{s.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </footer>
+                  </article>
+                ))
+              )}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+
+  const renderLeadsLoading = () => (
+    <div className="business-tab-state">
+      <Loader2 className="animate-spin" size={32} style={{ color: COLORS.textMuted }} />
+      <span>Loading leads…</span>
+    </div>
+  );
+
+  const renderLeadsError = () => (
+    <div className="business-tab-state">
+      <AlertTriangle size={36} style={{ color: COLORS.error }} />
+      <h4>Failed to load leads</h4>
+      <button type="button" onClick={fetchPipelineLeads} className="chip-fallback-btn">Retry</button>
+    </div>
+  );
+
+  const renderEmptyPipeline = () => (
+    <div className="business-tab-state">
+      <Sliders size={44} style={{ color: 'var(--text-muted)', opacity: 0.6 }} />
+      <h4>Your pipeline is empty</h4>
+      <p>Search Google Places to add your first business prospects.</p>
+      <button type="button" className="btn-primary" onClick={() => setWorkspaceSection('source')}>
+        Find New Leads
+      </button>
+    </div>
+  );
 
   // Show Toast helper
   const showToast = (message, type = 'success') => {
@@ -81,7 +268,6 @@ function BusinessWorkspaceContent() {
     }
   };
 
-  // Run Google Places Search Sourcing
   const executeSearch = async (queryStr) => {
     if (!queryStr.trim()) return;
     setSearchLoading(true);
@@ -233,8 +419,8 @@ function BusinessWorkspaceContent() {
         handleSelectLead(leadData.id);
       } else {
         showToast(`Added "${leadData.business_name}" to pipeline!`, 'success');
-        // Add to leads array in-memory
         setLeads(prev => [leadData, ...prev]);
+        setWorkspaceSection('pipeline');
       }
     } catch (err) {
       console.error(err);
@@ -345,356 +531,260 @@ function BusinessWorkspaceContent() {
   };
 
   return (
-    <div className="workspace-page workspace-page--bleed" id="business-workspace-root">
-      
-      {/* Source business leads */}
-      <div className="workspace-source-panel workspace-source-panel--business business-source-panel">
-        <section className="workspace-source-hero">
-          <div className="workspace-source-hero-copy">
-            <p className="workspace-source-eyebrow">Google Places sourcing</p>
-            <h2 className="workspace-source-title">Source business leads</h2>
-            <p className="workspace-source-desc">
-              Find {LEAD_PATH.business.label.toLowerCase()}. Search by region or category, review results, then add prospects to your pipeline board below.
-            </p>
-          </div>
-          <form onSubmit={(e) => { e.preventDefault(); executeSearch(searchQuery); }} className="workspace-source-form">
-            <div className="search-box-wrapper workspace-search-box">
-              <Search className="search-icon-left" size={20} />
-              <input
-                type="text"
-                className="search-input-field"
-                placeholder="e.g. Roofing contractors in Dallas"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-              <button type="submit" className="search-submit-btn">
-                Source leads
-                <ArrowRight size={16} />
+    <div
+      className={`workspace-page workspace-page--business${
+        workspaceSection === 'pipeline' || workspaceSection === 'table' ? ' workspace-page--board-view' : ''
+      }`}
+      id="business-workspace-root"
+    >
+      {toast && (
+        <div className={`workspace-toast workspace-toast--${toast.type}`}>
+          {toast.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+          <span>{toast.message}</span>
+        </div>
+      )}
+
+      <header className="individual-page-header">
+        <nav className="individual-workspace-nav" aria-label="Business leads workflow">
+          {BUSINESS_WORKSPACE_SECTIONS.map((section) => {
+            const SectionIcon = section.icon;
+            const isActive = workspaceSection === section.id;
+            return (
+              <button
+                key={section.id}
+                type="button"
+                className={`individual-workspace-nav__tab${isActive ? ' individual-workspace-nav__tab--active' : ''}`}
+                onClick={() => setWorkspaceSection(section.id)}
+              >
+                <SectionIcon size={16} />
+                <span>{section.label}</span>
               </button>
-            </div>
-          </form>
-        </section>
-      </div>
+            );
+          })}
+        </nav>
+      </header>
 
-      {/* Sourcing Results Panel */}
-      {showSearchPanel && (
-        <div className="glass-card business-search-results" style={{ border: '1px solid var(--border-color)', background: '#ffffff' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <PlusCircle size={16} style={{ color: COLORS.powderBlush }} />
-              <h4 style={{ fontWeight: 600, fontSize: '0.9rem' }}>
-                Google Places Sourcing: "{searchQuery || urlQuery}"
-              </h4>
-            </div>
-            <button 
-              onClick={() => { setShowSearchPanel(false); setSearchResults([]); }}
-              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}
-            >
-              <X size={16} />
-            </button>
-          </div>
-
-          {searchLoading ? (
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', gap: '8px', color: 'var(--text-secondary)' }}>
-              <Loader2 className="animate-spin" size={20} style={{ color: COLORS.powderBlush }} />
-              <span>Scraping regional listings...</span>
-            </div>
-          ) : searchError ? (
-            <div style={{ color: COLORS.error, fontSize: '0.8rem', textAlign: 'center', padding: '16px' }}>
-              Failed to fetch results. Check backend logs.
-            </div>
-          ) : searchResults.length === 0 ? (
-            <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', textAlign: 'center', padding: '16px' }}>
-              No businesses found matching this query.
-            </div>
-          ) : (
-            <div style={{ display: 'flex', gap: '16px', overflowX: 'auto', paddingBottom: '8px' }}>
-              {searchResults.map((business, idx) => (
-                <div 
-                  key={business.google_place_id || idx}
-                  className="glass-card"
-                  style={{
-                    minWidth: '280px',
-                    width: '280px',
-                    padding: '16px',
-                    border: '1px solid var(--border-color)',
-                    background: COLORS.white,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    justifyContent: 'space-between',
-                    gap: '12px'
-                  }}
-                >
-                  <div>
-                    <h5 style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {business.business_name}
-                    </h5>
-                    
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                      <Star size={10} style={{ color: COLORS.warning, fill: COLORS.warning }} />
-                      <span>{business.rating || 'No rating'}</span>
-                      <span>•</span>
-                      <span>{business.open_status || 'UNKNOWN'}</span>
-                    </div>
-
-                    <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      <MapPin size={10} style={{ marginRight: '2px', display: 'inline' }} />
-                      {business.address || 'No Address'}
-                    </p>
-                  </div>
-
-                  <button 
-                    onClick={() => handleAddLead(business)}
-                    style={{
-                      width: '100%',
-                      background: RGBA.blush05,
-                      border: `1px solid ${RGBA.blush20}`,
-                      borderRadius: '6px',
-                      color: COLORS.powderBlush,
-                      padding: '6px',
-                      fontSize: '0.75rem',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '4px'
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = RGBA.blush20; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = RGBA.blush05; }}
-                  >
-                    <Plus size={12} />
-                    Add to Pipeline
-                  </button>
+      {workspaceSection === 'source' && (
+        <div className="individual-section individual-section--source">
+          {!showSearchPanel ? (
+            <section className="individual-search-hub" aria-label="Find new businesses">
+              <div className="individual-search-hub__inner">
+                <div className="individual-search-hub__copy">
+                  <p className="individual-search-hub__eyebrow">New business search</p>
+                  <h2 className="individual-search-hub__title">
+                    What businesses are you targeting?
+                  </h2>
+                  <p className="individual-search-hub__desc">
+                    Search Google Places by region or category to find {LEAD_PATH.business.label.toLowerCase()}.
+                  </p>
                 </div>
-              ))}
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const query = searchQuery.trim();
+                    if (!query) {
+                      setSearchValidationError('Enter a region or business category (e.g. "Roofing contractors in Dallas").');
+                      return;
+                    }
+                    setSearchValidationError('');
+                    executeSearch(query);
+                  }}
+                  className="individual-search-hub__form"
+                >
+                  <div className={`individual-search-hub__bar${searchValidationError ? ' individual-search-hub__bar--invalid' : ''}`}>
+                    <Search className="individual-search-hub__icon" size={22} aria-hidden="true" />
+                    <input
+                      type="text"
+                      className="individual-search-hub__input"
+                      placeholder="e.g. Roofing contractors in Dallas"
+                      value={searchQuery}
+                      onChange={(e) => {
+                        setSearchQuery(e.target.value);
+                        if (e.target.value.trim()) setSearchValidationError('');
+                      }}
+                      aria-label="Business search query"
+                    />
+                    <button type="submit" className="individual-search-hub__submit">
+                      Source leads
+                      <ArrowRight size={18} />
+                    </button>
+                  </div>
+                  {searchValidationError && (
+                    <div className="individual-search-hub__error">
+                      <AlertTriangle size={14} />
+                      <span>{searchValidationError}</span>
+                    </div>
+                  )}
+                </form>
+
+                <div className="individual-search-hub__hints" aria-label="Example searches">
+                  <span className="individual-search-hub__hints-label">Try</span>
+                  {BUSINESS_SEARCH_HINTS.map((hint) => (
+                    <button
+                      key={hint}
+                      type="button"
+                      className="individual-search-hub__hint"
+                      onClick={() => {
+                        setSearchQuery(hint);
+                        setSearchValidationError('');
+                      }}
+                    >
+                      {hint}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </section>
+          ) : (
+            <div className="business-search-active">
+              <div className="business-search-active__header">
+                <h3 className="business-search-active__title">
+                  <PlusCircle size={16} style={{ color: COLORS.textMuted }} />
+                  Results for &ldquo;{searchQuery || urlQuery}&rdquo;
+                </h3>
+                <button
+                  type="button"
+                  className="business-search-active__back"
+                  onClick={() => { setShowSearchPanel(false); setSearchResults([]); setSearchError(false); }}
+                >
+                  <X size={14} />
+                  Search again
+                </button>
+              </div>
+
+              {searchLoading ? (
+                <div className="business-tab-state business-tab-state--inline">
+                  <Loader2 className="animate-spin" size={20} style={{ color: COLORS.textMuted }} />
+                  <span>Scraping regional listings…</span>
+                </div>
+              ) : searchError ? (
+                <p className="business-tab-state__error">Failed to fetch results. Check backend logs.</p>
+              ) : searchResults.length === 0 ? (
+                <p className="business-tab-state__muted">No businesses found for this query.</p>
+              ) : (
+                <div className="business-search-results-grid">
+                  {searchResults.map((business, idx) => (
+                    <div key={business.google_place_id || idx} className="glass-card business-search-card">
+                      <div>
+                        <h5 className="business-search-card__title">{business.business_name}</h5>
+                        <div className="business-search-card__meta">
+                          <Star size={10} style={{ color: COLORS.warning, fill: COLORS.warning }} />
+                          <span>{business.rating || 'No rating'}</span>
+                          <span>·</span>
+                          <span>{business.open_status || 'UNKNOWN'}</span>
+                        </div>
+                        <p className="business-search-card__address">
+                          <MapPin size={10} />
+                          {business.address || 'No address'}
+                        </p>
+                      </div>
+                      <button type="button" onClick={() => handleAddLead(business)} className="business-search-card__add">
+                        <Plus size={12} />
+                        Add to pipeline
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
       )}
 
-      {/* Main Board View */}
-      {leadsLoading ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
-          <Loader2 className="animate-spin" size={32} style={{ color: COLORS.powderBlush }} />
-          <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Loading board columns...</span>
-        </div>
-      ) : leadsError ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '16px' }}>
-          <AlertTriangle size={36} style={{ color: COLORS.error }} />
-          <h4 style={{ fontWeight: 600 }}>Failed to load Pipeline Board</h4>
-          <button onClick={fetchPipelineLeads} className="chip-fallback-btn">
-            Retry Load
-          </button>
-        </div>
-      ) : leads.length === 0 ? (
-        /* Empty State */
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '40px' }}>
-          <Sliders size={48} style={{ color: 'var(--text-muted)', marginBottom: '16px', opacity: 0.6 }} />
-          <h4 style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '8px' }}>
-            Your Pipeline is Empty
-          </h4>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', maxWidth: '380px', marginBottom: '24px', lineHeight: '1.5' }}>
-            No business prospects found. Search for regional targets using the sourcing input above to seed your sales pipeline.
-          </p>
-          <div style={{ maxWidth: '360px', width: '100%', display: 'flex', gap: '8px' }}>
-            <input 
-              type="text"
-              placeholder="e.g. Roofers in Dallas"
-              className="chip-fallback-btn"
-              style={{ flex: 1, textAlign: 'left', background: COLORS.white, border: '1px solid var(--border-color)', color: 'var(--text-primary)', outline: 'none' }}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              value={searchQuery}
-            />
-            <button 
-              className="btn-primary" 
-              onClick={() => executeSearch(searchQuery)}
-              style={{ fontSize: '0.8rem', padding: '8px 16px' }}
-            >
-              Source
-            </button>
-          </div>
-        </div>
-      ) : (
-        <>
-          {/* Filters Toolbar */}
-          <div className="business-filter-bar">
-            <div style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', gap: '12px', background: COLORS.white, padding: '10px 14px', borderRadius: '8px', border: '1px solid var(--border-color)', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Filter by original search query:</span>
-            <select
-              value={selectedQueryFilter}
-              onChange={(e) => setSelectedQueryFilter(e.target.value)}
-              style={{
-                background: '#ffffff',
-                border: '1px solid var(--border-color)',
-                borderRadius: '6px',
-                color: 'var(--text-primary)',
-                padding: '6px 12px',
-                fontSize: '0.75rem',
-                outline: 'none',
-                minWidth: '180px',
-                fontWeight: 500
-              }}
-            >
-              <option value="">All Queries</option>
-              {Array.from(new Set(leads.map(lead => lead.source_query).filter(Boolean))).map(q => (
-                <option key={q} value={q}>{q}</option>
-              ))}
-            </select>
-            {selectedQueryFilter && (
-              <button
-                onClick={() => setSelectedQueryFilter('')}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: COLORS.powderBlush,
-                  fontSize: '0.75rem',
-                  cursor: 'pointer',
-                  fontWeight: 600,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px'
-                }}
-              >
-                Clear Filter
-              </button>
-            )}
-            </div>
-          </div>
-
-      {/* Pipeline board */}
-      <div className="business-pipeline-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <KanbanSquare size={22} style={{ color: COLORS.text }} />
-          <div>
-            <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)' }}>Pipeline board</h3>
-            <p style={{ margin: '2px 0 0', fontSize: '0.78rem', color: 'var(--text-muted)' }}>Drag cards to update stage</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Kanban area */}
-          <div className="kanban-board">
-            {STAGES.map(stage => {
-              const stageLeads = leads
-                .filter(l => !selectedQueryFilter || l.source_query === selectedQueryFilter)
-                .filter(l => l.pipeline_stage === stage.id);
-            return (
-              <div
-                key={stage.id}
-                className="kanban-column"
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => handleDrop(e, stage.id)}
-                style={{
-                  background: stage.bg,
-                }}
-              >
-                {/* Column Header */}
-                <div style={{ padding: '12px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'transparent', flexShrink: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
-                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: stage.color, flexShrink: 0 }}></div>
-                    <span style={{ fontWeight: 700, fontSize: '0.8rem', color: 'var(--text-primary)', whitespace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {stage.label}
-                    </span>
-                  </div>
-                  <span style={{ fontSize: '0.7rem', background: '#ffffff', color: 'var(--text-secondary)', padding: '2px 6px', borderRadius: '8px', border: '1px solid var(--border-color)', fontWeight: 600, flexShrink: 0 }}>
-                    {stageLeads.length}
-                  </span>
-                </div>
-
-                {/* Column Scrollable Content */}
-                <div style={{ flex: 1, overflowY: 'auto', padding: '8px', display: 'flex', flexDirection: 'column', gap: '8px', minHeight: 0 }}>
-                  {stageLeads.length === 0 ? (
-                    <div style={{ padding: '16px 12px', textTransform: 'uppercase', fontSize: '0.6rem', color: 'var(--text-muted)', border: '1px dashed rgba(255,255,255,0.03)', borderRadius: '6px', textAlign: 'center', fontStyle: 'italic', letterSpacing: '0.05em' }}>
-                      Drop cards here
-                    </div>
-                  ) : (
-                    stageLeads.map(lead => (
-                      <div
-                        key={lead.id}
-                        draggable
-                        onDragStart={(e) => handleDragStart(e, lead.id, lead.pipeline_stage)}
-                        onClick={() => handleSelectLead(lead.id)}
-                        style={{
-                          background: '#ffffff',
-                          border: `1px solid ${selectedLeadId === lead.id ? COLORS.powderBlush : 'var(--border-color)'}`,
-                          borderRadius: '6px',
-                          padding: '10px',
-                          cursor: 'grab',
-                          transition: 'all 0.2s',
-                          boxShadow: selectedLeadId === lead.id ? '0 0 8px rgba(247,175,157,0.25)' : 'none'
-                        }}
-                        onMouseEnter={(e) => { if (selectedLeadId !== lead.id) e.currentTarget.style.borderColor = 'var(--border-hover)'; }}
-                        onMouseLeave={(e) => { if (selectedLeadId !== lead.id) e.currentTarget.style.borderColor = 'var(--border-color)'; }}
-                      >
-                        <h5 style={{ fontWeight: 600, fontSize: '0.75rem', color: 'var(--text-primary)', marginBottom: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {lead.business_name}
-                        </h5>
-
-                        <div style={{ fontSize: '0.6rem', color: 'var(--text-secondary)', marginBottom: '3px', fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          Query: {lead.source_query || 'no query'}
-                        </div>
-
-                        <p style={{ fontSize: '0.65rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '2px', marginBottom: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          <MapPin size={9} style={{ flexShrink: 0 }} />
-                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {lead.address || 'No Location'}
-                          </span>
-                        </p>
-
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px', flexWrap: 'wrap' }}>
-                          <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                            {lead.rating && (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '1px', fontSize: '0.6rem', color: COLORS.warning, fontWeight: 'bold' }}>
-                                <Star size={9} style={{ fill: COLORS.warning, flexShrink: 0 }} />
-                                {lead.rating}
-                              </div>
-                            )}
-                            {lead.website && (
-                              <a 
-                                href={lead.website} 
-                                target="_blank" 
-                                rel="noreferrer" 
-                                onClick={(e) => e.stopPropagation()} 
-                                style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', flexShrink: 0 }}
-                              >
-                                <Globe size={9} />
-                              </a>
-                            )}
-                          </div>
-
-                          {/* Mobile/Touch Fallback drop selector */}
-                          <select
-                            value={lead.pipeline_stage}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) => handleStageUpdate(lead.id, lead.pipeline_stage, e.target.value)}
-                            style={{
-                              background: COLORS.white,
-                              border: '1px solid var(--border-color)',
-                              borderRadius: '3px',
-                              color: 'var(--text-muted)',
-                              fontSize: '0.6rem',
-                              padding: '2px 3px',
-                              outline: 'none',
-                              cursor: 'pointer'
-                            }}
-                          >
-                            {STAGES.map(s => (
-                              <option key={s.id} value={s.id} style={{ background: COLORS.white, color: 'var(--text-primary)' }}>
-                                Move to {s.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
+      {workspaceSection === 'pipeline' && (
+        <div className="business-section business-section--pipeline">
+          {leadsLoading ? renderLeadsLoading() : leadsError ? renderLeadsError() : leads.length === 0 ? renderEmptyPipeline() : (
+            <div className="business-board-section">
+              <div className="business-tab-toolbar">
+                <span className="business-tab-toolbar__count">{filteredLeads.length} leads</span>
+                {renderQueryFilter('-pipeline')}
+                <p className="business-pipeline-scroll-hint business-pipeline-scroll-hint--desktop" aria-hidden="true">Swipe columns →</p>
+                <p className="business-pipeline-scroll-hint business-pipeline-scroll-hint--mobile" aria-hidden="true">Scroll for all stages ↓</p>
               </div>
-            );
-          })}
+              <div className="pipeline-board-shell">
+                {renderKanbanBoard()}
+              </div>
+            </div>
+          )}
         </div>
-        </>
+      )}
+
+      {workspaceSection === 'table' && (
+        <div className="business-section business-section--table">
+          {leadsLoading ? renderLeadsLoading() : leadsError ? renderLeadsError() : (
+            <>
+              <div className="business-tab-toolbar">
+                <span className="business-tab-toolbar__count">{filteredLeads.length} leads</span>
+                {renderQueryFilter('-table')}
+              </div>
+              {filteredLeads.length === 0 ? (
+                <div className="business-tab-state">
+                  <p>No leads match this filter.</p>
+                  <button type="button" className="btn-primary" onClick={() => setWorkspaceSection('source')}>
+                    Find New Leads
+                  </button>
+                </div>
+              ) : (
+                <div className="business-table-scroll">
+                  <table className="results-table business-leads-table">
+                    <thead>
+                      <tr>
+                        <th>Business</th>
+                        <th>Stage</th>
+                        <th>Query</th>
+                        <th>Address</th>
+                        <th>Rating</th>
+                        <th>Phone</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredLeads.map((lead) => (
+                          <tr
+                            key={lead.id}
+                            className={selectedLeadId === lead.id ? 'business-leads-table__row--selected' : ''}
+                            onClick={() => handleSelectLead(lead.id)}
+                          >
+                            <td>
+                              <span className="business-leads-table__name">{lead.business_name}</span>
+                              {lead.website && (
+                                <a
+                                  href={lead.website}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="business-leads-table__link"
+                                >
+                                  <Globe size={12} />
+                                </a>
+                              )}
+                            </td>
+                            <td>
+                              <select
+                                className="pipeline-stage-select business-leads-table__stage"
+                                value={lead.pipeline_stage}
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={(e) => handleStageUpdate(lead.id, lead.pipeline_stage, e.target.value)}
+                                aria-label={`Change stage for ${lead.business_name}`}
+                              >
+                                {STAGES.map((s) => (
+                                  <option key={s.id} value={s.id}>{s.label}</option>
+                                ))}
+                              </select>
+                            </td>
+                            <td>{lead.source_query || '—'}</td>
+                            <td>{lead.address || '—'}</td>
+                            <td>{lead.rating || '—'}</td>
+                            <td>{lead.phone || '—'}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+        </div>
       )}
 
       {/* Detail Slide-over Panel (Step 3.7) */}
@@ -708,7 +798,7 @@ function BusinessWorkspaceContent() {
         <div className="detail-slide-over">
           {detailsLoading ? (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
-              <Loader2 className="animate-spin" size={32} style={{ color: COLORS.powderBlush }} />
+              <Loader2 className="animate-spin" size={32} style={{ color: COLORS.textMuted }} />
               <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Scraping details...</span>
             </div>
           ) : detailsError ? (
@@ -773,7 +863,7 @@ function BusinessWorkspaceContent() {
                 <div className="glass-card" style={{ padding: '20px', border: '1px solid var(--border-color)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                     <h4 style={{ fontSize: '0.85rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <Sparkles size={14} style={{ color: COLORS.powderBlush }} />
+                      <Sparkles size={14} style={{ color: COLORS.textMuted }} />
                       Contact & Owner Details
                     </h4>
                     {leadDetails.website && (
@@ -809,7 +899,7 @@ function BusinessWorkspaceContent() {
                 {/* AI Follow-Up Plans (Step 3.7 planning agent output) */}
                 <div className="glass-card" style={{ padding: '20px', border: '1px solid var(--border-color)' }}>
                   <h4 style={{ fontSize: '0.85rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <Activity size={14} style={{ color: COLORS.powderBlush }} />
+                    <Activity size={14} style={{ color: COLORS.textMuted }} />
                     Recommended Follow-Up Action
                   </h4>
 
@@ -819,8 +909,8 @@ function BusinessWorkspaceContent() {
                     if (!stageChangeEvent) return null;
                     const stageInfo = STAGES.find(s => s.id === stageChangeEvent.to_stage);
                     return (
-                      <div style={{ background: `${stageInfo?.color || COLORS.powderBlush}11`, border: `1px solid ${stageInfo?.color || COLORS.powderBlush}33`, borderRadius: '8px', padding: '10px 14px', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <Activity size={14} style={{ color: stageInfo?.color || COLORS.powderBlush, flexShrink: 0 }} />
+                      <div style={{ background: `${stageInfo?.color || COLORS.neutral}11`, border: `1px solid ${stageInfo?.color || COLORS.neutral}33`, borderRadius: '8px', padding: '10px 14px', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Activity size={14} style={{ color: stageInfo?.color || COLORS.neutral, flexShrink: 0 }} />
                         <span style={{ fontSize: '0.8rem', color: 'var(--text-primary)' }}>
                           AI reclassified: <strong>{stageChangeEvent.from_stage?.replace(/_/g,' ')}</strong> → <strong style={{ color: stageInfo?.color }}>{stageChangeEvent.to_stage?.replace(/_/g,' ')}</strong>
                         </span>
@@ -836,7 +926,7 @@ function BusinessWorkspaceContent() {
                     return (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontSize: '0.7rem', fontWeight: 700, color: COLORS.warning, textTransform: 'uppercase', background: 'rgba(196, 137, 58, 0.08)', padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(196, 137, 58, 0.18)' }}>
+                          <span style={{ fontSize: '0.7rem', fontWeight: 700, color: COLORS.warning, textTransform: 'uppercase', background: RGBA.amber08, padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(180, 83, 9, 0.18)' }}>
                             {plan.suggested_channel}
                           </span>
                           <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>{new Date(plan.created_at).toLocaleDateString()}</span>
@@ -870,7 +960,7 @@ function BusinessWorkspaceContent() {
                 {/* Interaction History */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   <h4 style={{ fontSize: '0.85rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <MessageSquare size={14} style={{ color: COLORS.powderBlush }} />
+                    <MessageSquare size={14} style={{ color: COLORS.textMuted }} />
                     Interaction History
                   </h4>
 
@@ -907,7 +997,7 @@ function BusinessWorkspaceContent() {
                 {/* Pipeline Event History log */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                   <h4 style={{ fontSize: '0.85rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <Clock size={14} style={{ color: COLORS.powderBlush }} />
+                    <Clock size={14} style={{ color: COLORS.textMuted }} />
                     Audit Log Timeline
                   </h4>
 
@@ -926,7 +1016,7 @@ function BusinessWorkspaceContent() {
                             width: '8px',
                             height: '8px',
                             borderRadius: '50%',
-                            background: event.event_type === 'stage_change' ? COLORS.powderBlush : event.event_type === 'follow_up_generated' ? COLORS.warning : COLORS.text,
+                            background: event.event_type === 'stage_change' ? COLORS.neutral : event.event_type === 'follow_up_generated' ? COLORS.warning : COLORS.text,
                             border: '1.5px solid #ffffff'
                           }}></div>
                           
@@ -1006,7 +1096,7 @@ export default function BusinessPage() {
   return (
     <Suspense fallback={
       <div className="glass-card" style={{ padding: '40px', textAlign: 'center', background: '#ffffff' }}>
-        <Loader2 className="animate-spin" size={24} style={{ color: COLORS.powderBlush, margin: '0 auto 12px' }} />
+        <Loader2 className="animate-spin" size={24} style={{ color: COLORS.textMuted, margin: '0 auto 12px' }} />
         <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Loading Workspace...</span>
       </div>
     }>

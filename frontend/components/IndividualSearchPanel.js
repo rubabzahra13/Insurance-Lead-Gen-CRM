@@ -4,14 +4,49 @@ import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { AVATAR_LABELS, LEAD_PATH, individualLabel, individualOverrideLabel } from '../lib/avatar-labels';
 import { refreshDashboard } from '../lib/dashboard-events';
+import { toFriendlyTrace, traceLevel } from '../lib/pipeline-trace';
 import { COLORS, RGBA } from '../lib/colors';
+
+const PIPELINE_STEPS = [
+  { key: 'classifying', number: 1, label: 'Lead Type', message: 'Understanding whether this search targets job seekers or job upgraders' },
+  { key: 'sourcing', number: 2, label: 'Sourcing', message: 'Searching LinkedIn for matching profiles' },
+  { key: 'syncing', number: 3, label: 'Database Sync', message: 'Saving profiles to your outreach drafts' },
+  { key: 'completed', number: 4, label: 'Preview Leads', message: 'Preparing your lead preview' },
+];
+
+function getPipelineProgress(searchState) {
+  switch (searchState) {
+    case 'classifying':
+      return { width: 33, live: true, complete: false };
+    case 'sourcing':
+      return { width: 66, live: true, complete: false };
+    case 'syncing':
+      return { width: 100, live: true, complete: false };
+    case 'completed':
+      return { width: 100, live: false, complete: true };
+    default:
+      return { width: 0, live: false, complete: false };
+  }
+}
+
+function getActivePipelineStep(searchState) {
+  return PIPELINE_STEPS.find((step) => step.key === searchState) || null;
+}
+
+function getStepNodeState(stepNumber, searchState) {
+  const active = getActivePipelineStep(searchState);
+  if (!active) return '';
+  if (active.number === stepNumber) return 'active';
+  if (active.number > stepNumber) return 'completed';
+  return '';
+}
 import {
   Search,
   Sparkles, AlertTriangle, ArrowRight,
-  Terminal as TerminalIcon, CheckCircle2, Loader2, ArrowUpRight, RotateCcw,
+  CheckCircle2, Loader2, ArrowUpRight, RotateCcw,
 } from 'lucide-react';
 
-export default function IndividualSearchPanel({ onComplete }) {
+export default function IndividualSearchPanel({ onComplete, activeSegment = 'avatar1' }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchState, setSearchState] = useState('idle');
   const [classification, setClassification] = useState(null);
@@ -22,6 +57,25 @@ export default function IndividualSearchPanel({ onComplete }) {
   const [validationError, setValidationError] = useState('');
 
   const logEndRef = useRef(null);
+
+  const logToConsole = (raw) => {
+    console.log(`[InsureLead Pipeline] ${toFriendlyTrace(raw)}`, { detail: raw });
+  };
+
+  const appendLog = (raw) => {
+    logToConsole(raw);
+    setScrapingLogs((prev) => [...prev, raw]);
+  };
+
+  const appendLogs = (raws) => {
+    raws.forEach(logToConsole);
+    setScrapingLogs((prev) => [...prev, ...raws]);
+  };
+
+  const replaceLogs = (raws) => {
+    raws.forEach(logToConsole);
+    setScrapingLogs(raws);
+  };
 
   // Auto-scroll logs
   useEffect(() => {
@@ -62,7 +116,9 @@ export default function IndividualSearchPanel({ onComplete }) {
     setClassification(null);
     setScrapedLeads([]);
     setErrorMessage('');
-    setScrapingLogs([
+    setScrapingLogs([]);
+    setErrorMessage('');
+    replaceLogs([
       `[INIT] Sourcing pipeline initialized for query: "${query}"`,
       `[STEP] Starting Stage 1: AI Search Classification...`,
     ]);
@@ -81,8 +137,7 @@ export default function IndividualSearchPanel({ onComplete }) {
 
       classifiedData = await res.json();
       setClassification(classifiedData);
-      setScrapingLogs(prev => [
-        ...prev,
+      appendLogs([
         `[SUCCESS] Classification completed.`,
         `[INFO] Lead type: ${individualLabel(classifiedData.avatar_type)}`,
         `[INFO] LLM Confidence: ${Math.round(classifiedData.confidence * 100)}%`,
@@ -90,10 +145,7 @@ export default function IndividualSearchPanel({ onComplete }) {
       ]);
     } catch (err) {
       console.error(err);
-      setScrapingLogs(prev => [
-        ...prev,
-        `[ERROR] Classification service failed. Falling back to heuristic classifier...`,
-      ]);
+      appendLog(`[ERROR] Classification service failed. Falling back to heuristic classifier...`);
       // Fallback classification client-side (individual leads only)
       const lower = query.toLowerCase();
       const isBiz = lower.includes('company') || lower.includes('clinic') || lower.includes('roof') || lower.includes('business') || lower.includes('founder') || lower.includes('contractor') || lower.includes('shop');
@@ -104,10 +156,7 @@ export default function IndividualSearchPanel({ onComplete }) {
           reasoning: 'This query looks business-focused. Use the Business Leads workspace instead.',
           query,
         });
-        setScrapingLogs(prev => [
-          ...prev,
-          `[INFO] Business searches belong on the Business Leads workspace.`,
-        ]);
+        appendLog(`[INFO] Business searches belong on the Business Leads workspace.`);
         setErrorMessage('This looks like a business search. Use Business Leads to source founder-led and small businesses.');
         setSearchState('failed');
         return;
@@ -119,17 +168,11 @@ export default function IndividualSearchPanel({ onComplete }) {
         query,
       };
       setClassification(classifiedData);
-      setScrapingLogs(prev => [
-        ...prev,
-        `[HEURISTIC] Lead type: ${individualLabel(classifiedData.avatar_type)}`,
-      ]);
+      appendLog(`[HEURISTIC] Lead type: ${individualLabel(classifiedData.avatar_type)}`);
     }
 
     if (classifiedData.avatar_type === 'avatar3') {
-      setScrapingLogs(prev => [
-        ...prev,
-        `[INFO] Business searches belong on the Business Leads workspace.`,
-      ]);
+      appendLog(`[INFO] Business searches belong on the Business Leads workspace.`);
       setErrorMessage('This looks like a business search. Use Business Leads to source founder-led and small businesses.');
       setSearchState('failed');
       return;
@@ -155,10 +198,7 @@ export default function IndividualSearchPanel({ onComplete }) {
     setSearchState('sourcing');
     setScrapedLeads([]);
     setErrorMessage('');
-    setScrapingLogs(prev => [
-      ...prev,
-      `[OVERRIDE] User manually switched lead type to: ${individualLabel(newType)}`,
-    ]);
+    appendLog(`[OVERRIDE] User manually switched lead type to: ${individualLabel(newType)}`);
 
     await runRecruitmentScraper(searchQuery, newType);
   };
@@ -200,13 +240,12 @@ export default function IndividualSearchPanel({ onComplete }) {
             newLogs.push(`✓ Pipeline Step Done: ${evt.label} (${evt.seconds}s)`);
           }
         });
-        setScrapingLogs(newLogs);
+        replaceLogs(newLogs);
       }
 
       if (job.status === 'done') {
         const rawLeads = job.result?.leads || [];
-        setScrapingLogs(prev => [
-          ...prev,
+        appendLogs([
           `[SUCCESS] Scraper pipeline finished executing.`,
           `[LOG] Synced & imported ${rawLeads.length} individual leads to the database.`,
         ]);
@@ -221,7 +260,7 @@ export default function IndividualSearchPanel({ onComplete }) {
         setSearchState('completed');
         return true; // Polling finished
       } else if (job.status === 'error') {
-        setScrapingLogs(prev => [...prev, `[ERROR] Scraper pipeline reported failure: ${job.error}`]);
+        appendLog(`[ERROR] Scraper pipeline reported failure: ${job.error}`);
         setErrorMessage(job.error);
         setSearchState('failed');
         return true; // Polling finished
@@ -236,8 +275,7 @@ export default function IndividualSearchPanel({ onComplete }) {
   // Run Avatar 1/2 (LinkedIn scraping SSE pipeline)
   const runRecruitmentScraper = async (query, avatarType) => {
     const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
-    setScrapingLogs(prev => [
-      ...prev,
+    appendLogs([
       `[STEP] Starting Stage 2: Sourcing individual leads (LinkedIn)...`,
       `[LOG] Submitting scrape trigger request to shared backend...`,
     ]);
@@ -256,8 +294,7 @@ export default function IndividualSearchPanel({ onComplete }) {
       const triggerData = await triggerRes.json();
       const runId = triggerData.runId;
 
-      setScrapingLogs(prev => [
-        ...prev,
+      appendLogs([
         `[LOG] Scraper job created: ${runId}`,
         `[LOG] Listening to SSE pipeline stream events...`,
       ]);
@@ -270,15 +307,14 @@ export default function IndividualSearchPanel({ onComplete }) {
           const data = JSON.parse(event.data);
           
           if (data.type === 'log') {
-            setScrapingLogs(prev => [...prev, `[SCRAPER] ${data.message}`]);
+            appendLog(`[SCRAPER] ${data.message}`);
           } else if (data.type === 'step_start') {
-            setScrapingLogs(prev => [...prev, `→ Pipeline Step Start: ${data.label}`]);
+            appendLog(`→ Pipeline Step Start: ${data.label}`);
           } else if (data.type === 'step_done') {
-            setScrapingLogs(prev => [...prev, `✓ Pipeline Step Done: ${data.label} (${data.seconds}s)`]);
+            appendLog(`✓ Pipeline Step Done: ${data.label} (${data.seconds}s)`);
           } else if (data.type === 'done') {
             const rawLeads = data.result?.leads || [];
-            setScrapingLogs(prev => [
-              ...prev,
+            appendLogs([
               `[SUCCESS] Scraper pipeline finished executing.`,
               `[LOG] Synced & imported ${rawLeads.length} individual leads to the database.`,
             ]);
@@ -294,7 +330,7 @@ export default function IndividualSearchPanel({ onComplete }) {
             setSearchState('completed');
             eventSource.close();
           } else if (data.type === 'error') {
-            setScrapingLogs(prev => [...prev, `[ERROR] Scraper pipeline reported failure: ${data.message}`]);
+            appendLog(`[ERROR] Scraper pipeline reported failure: ${data.message}`);
             setErrorMessage(data.message);
             setSearchState('failed');
             eventSource.close();
@@ -306,10 +342,7 @@ export default function IndividualSearchPanel({ onComplete }) {
 
       eventSource.onerror = (err) => {
         console.error('SSE connection error, fallback to polling:', err);
-        setScrapingLogs(prev => [
-          ...prev, 
-          `[WARNING] SSE connection silent or lost. Activating backup polling checker...`
-        ]);
+        appendLog(`[WARNING] SSE connection silent or lost. Activating backup polling checker...`);
         eventSource.close();
         
         // Start backup polling
@@ -323,10 +356,9 @@ export default function IndividualSearchPanel({ onComplete }) {
 
     } catch (err) {
       console.error(err);
-      setScrapingLogs(prev => [
-        ...prev, 
+      appendLogs([
         `[ERROR] Scraper server unavailable: ${err.message}`,
-        `[INFO] Querying existing database as fallback...`
+        `[INFO] Querying existing database as fallback...`,
       ]);
 
       // Database fallback loader
@@ -350,10 +382,7 @@ export default function IndividualSearchPanel({ onComplete }) {
                 headline: lead.headline || 'Lead Profile',
                 linkedin_url: lead.linkedin_url || '#',
               })));
-              setScrapingLogs(prev => [
-                ...prev,
-                `[SUCCESS] Loaded ${filtered.length} matching leads from database repository.`
-              ]);
+              appendLog(`[SUCCESS] Loaded ${filtered.length} matching leads from database repository.`);
               setSearchState('completed');
             } else {
               throw new Error('No historical leads match this query in the database.');
@@ -362,17 +391,16 @@ export default function IndividualSearchPanel({ onComplete }) {
             throw new Error('Failed to query local database.');
           }
         } catch (dbErr) {
-          setScrapingLogs(prev => [
-            ...prev,
+          appendLogs([
             `[ERROR] Database fallback failed: ${dbErr.message}`,
-            `[INFO] Seeding simulated demonstration leads...`
+            `[INFO] Seeding simulated demonstration leads...`,
           ]);
 
           setSearchState('sourcing');
           setTimeout(() => {
-            setScrapingLogs(prev => [...prev, `[SCRAPER] Web search Grounding profiles...`]);
+            appendLog(`[SCRAPER] Web search Grounding profiles...`);
             setTimeout(async () => {
-              setScrapingLogs(prev => [...prev, `[SCRAPER] Structuring 2 leads with Claude...`]);
+              appendLog(`[SCRAPER] Structuring 2 leads with Claude...`);
               setSearchState('syncing');
               
               const mockCandidates = [
@@ -412,10 +440,7 @@ export default function IndividualSearchPanel({ onComplete }) {
                 linkedin_url: c.linkedin_url,
               })));
 
-              setScrapingLogs(prev => [
-                ...prev,
-                `[SUCCESS] Sync completed. Synced mock profile prospects to database.`,
-              ]);
+              appendLog(`[SUCCESS] Sync completed. Synced mock profile prospects to database.`);
               setSearchState('completed');
             }, 1500);
           }, 1000);
@@ -438,39 +463,83 @@ export default function IndividualSearchPanel({ onComplete }) {
     setClassification(null);
   };
 
+  const segmentLabel = individualLabel(activeSegment);
+  const segmentPlaceholder = 'Search by role, city, or niche…';
+
+  const searchHints = activeSegment === 'avatar1'
+    ? [
+        'Insurance agents open to work in Dallas',
+        'Licensed agents exploring careers in Chicago',
+        'Career changers interested in insurance in Austin',
+      ]
+    : [
+        'Senior producers ready for a better role in Texas',
+        'Experienced brokers open to upgrade in Florida',
+        'Top performers seeking agency change in Atlanta',
+      ];
+
+  const pipelineProgress = getPipelineProgress(searchState);
+  const activePipelineStep = getActivePipelineStep(searchState);
+
   return (
-    <div className="workspace-source-panel workspace-source-panel--individual">
+    <div className={`workspace-source-panel workspace-source-panel--individual${searchState === 'idle' ? ' workspace-source-panel--hub' : ' workspace-source-panel--active'}`}>
       {searchState === 'idle' ? (
-        <section className="workspace-source-hero">
-          <div className="workspace-source-hero-copy">
-            <p className="workspace-source-eyebrow">LinkedIn sourcing</p>
-            <h2 className="workspace-source-title">Source individual leads</h2>
-            <p className="workspace-source-desc">
-              Find {LEAD_PATH.people.label.toLowerCase()}. AI classifies each search as {AVATAR_LABELS.avatar1.toLowerCase()} or {AVATAR_LABELS.avatar2.toLowerCase()}, then imports profiles to your list below.
-            </p>
-          </div>
-          <form onSubmit={handleSearchSubmit} className="workspace-source-form">
-            <div className={`search-box-wrapper workspace-search-box ${validationError ? 'invalid' : ''}`}>
-              <Search className="search-icon-left" size={20} />
-              <input
-                type="text"
-                className="search-input-field"
-                placeholder="e.g. Insurance agents open to work in Dallas"
-                value={searchQuery}
-                onChange={handleSearchChange}
-              />
-              <button type="submit" className="search-submit-btn">
-                Source leads
-                <ArrowRight size={16} />
-              </button>
+        <section className="individual-search-hub" aria-label="Find new leads">
+          <div className="individual-search-hub__inner">
+            <div className="individual-search-hub__copy">
+              <p className="individual-search-hub__eyebrow">New lead search · {segmentLabel}</p>
+              <h2 className="individual-search-hub__title">
+                Who are you looking for today?
+              </h2>
+              <p className="individual-search-hub__desc">
+                {activeSegment === 'avatar1'
+                  ? 'Describe the job seekers you want. We search LinkedIn and add matching profiles to your outreach drafts.'
+                  : 'Describe the experienced agents you want. We search LinkedIn and add matching profiles to your outreach drafts.'}
+              </p>
             </div>
-            {validationError && (
-              <div className="search-validation-error">
-                <AlertTriangle size={14} />
-                <span>{validationError}</span>
+
+            <form onSubmit={handleSearchSubmit} className="individual-search-hub__form">
+              <div className={`individual-search-hub__bar${validationError ? ' individual-search-hub__bar--invalid' : ''}`}>
+                <Search className="individual-search-hub__icon" size={22} aria-hidden="true" />
+                <input
+                  type="text"
+                  className="individual-search-hub__input"
+                  placeholder={segmentPlaceholder}
+                  value={searchQuery}
+                  onChange={handleSearchChange}
+                  aria-label="Lead search query"
+                  autoFocus
+                />
+                <button type="submit" className="individual-search-hub__submit">
+                  Find leads
+                  <ArrowRight size={18} />
+                </button>
               </div>
-            )}
-          </form>
+              {validationError && (
+                <div className="individual-search-hub__error">
+                  <AlertTriangle size={14} />
+                  <span>{validationError}</span>
+                </div>
+              )}
+            </form>
+
+            <div className="individual-search-hub__hints" aria-label="Example searches">
+              <span className="individual-search-hub__hints-label">Try</span>
+              {searchHints.map((hint) => (
+                <button
+                  key={hint}
+                  type="button"
+                  className="individual-search-hub__hint"
+                  onClick={() => {
+                    setSearchQuery(hint);
+                    setValidationError('');
+                  }}
+                >
+                  {hint}
+                </button>
+              ))}
+            </div>
+          </div>
         </section>
       ) : (
         <section className="workspace-source-console glass-card">
@@ -544,82 +613,101 @@ export default function IndividualSearchPanel({ onComplete }) {
             </div>
           )}
 
-          {/* Stepper Node */}
+          {/* Stepper */}
           <div className="stepper-container">
-            <div className="stepper-line"></div>
-            <div 
-              className="stepper-line-progress" 
-              style={{ 
-                width: 
-                  searchState === 'classifying' ? '12%' : 
-                  searchState === 'sourcing' ? '45%' : 
-                  searchState === 'syncing' ? '78%' : 
-                  searchState === 'completed' ? '100%' : '0%' 
-              }}
-            ></div>
-
-            <div className="stepper-step">
-              <div className={`step-node ${searchState === 'classifying' ? 'active' : (searchState !== 'idle' ? 'completed' : '')}`}>1</div>
-              <span className={`step-label ${searchState === 'classifying' ? 'active' : ''}`}>Lead Type</span>
+            <div className="stepper-track" aria-hidden="true">
+              <div className="stepper-line"></div>
+              <div
+                className={`stepper-line-progress${
+                  pipelineProgress.complete ? ' stepper-line-progress--complete' :
+                  pipelineProgress.live ? ' stepper-line-progress--live' : ''
+                }`}
+                style={{ width: `${pipelineProgress.width}%` }}
+              ></div>
             </div>
 
-            <div className="stepper-step">
-              <div className={`step-node ${searchState === 'sourcing' ? 'active' : (searchState === 'syncing' || searchState === 'completed' ? 'completed' : '')}`}>2</div>
-              <span className={`step-label ${searchState === 'sourcing' ? 'active' : ''}`}>Sourcing</span>
-            </div>
-
-            <div className="stepper-step">
-              <div className={`step-node ${searchState === 'syncing' ? 'active' : (searchState === 'completed' ? 'completed' : '')}`}>3</div>
-              <span className={`step-label ${searchState === 'syncing' ? 'active' : ''}`}>Database Sync</span>
-            </div>
-
-            <div className="stepper-step">
-              <div className={`step-node ${searchState === 'completed' ? 'completed' : ''}`}>4</div>
-              <span className={`step-label ${searchState === 'completed' ? 'active' : ''}`}>Preview Leads</span>
-            </div>
+            {PIPELINE_STEPS.map((step) => (
+              <div className="stepper-step" key={step.key}>
+                <div className={`step-node ${getStepNodeState(step.number, searchState)}`}>
+                  {getStepNodeState(step.number, searchState) === 'completed' ? '✓' : step.number}
+                </div>
+                <span className={`step-label ${getStepNodeState(step.number, searchState) === 'active' ? 'active' : ''}`}>
+                  {step.label}
+                </span>
+              </div>
+            ))}
           </div>
 
-          {/* Terminal Console View */}
-          <div className="terminal-box">
-            <div className="terminal-header">
-              <div className="terminal-dots">
-                <span className="terminal-dot dot-red"></span>
-                <span className="terminal-dot dot-yellow"></span>
-                <span className="terminal-dot dot-green"></span>
+          {/* Live progress timeline */}
+          <div className="pipeline-progress">
+            <div className="pipeline-progress__header">
+              <div>
+                <h4 className="pipeline-progress__title">What&apos;s happening</h4>
+                <p className="pipeline-progress__subtitle">
+                  {activePipelineStep
+                    ? `Step ${activePipelineStep.number} of 4 · ${activePipelineStep.label}`
+                    : 'We\'ll update this list as each step completes.'}
+                </p>
               </div>
-              <span className="terminal-title">
-                <TerminalIcon size={12} style={{ display: 'inline', marginRight: '6px', transform: 'translateY(-1px)' }} />
-                Scraper Pipeline Logs
-              </span>
-              <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
-                {classification ? `Confidence: ${Math.round(classification.confidence * 100)}%` : 'Active'}
+              <span className={`pipeline-progress__status pipeline-progress__status--${
+                searchState === 'completed' ? 'done' :
+                searchState === 'failed' ? 'error' :
+                'working'
+              }`}>
+                {searchState !== 'completed' && searchState !== 'failed' && (
+                  <Loader2 className="animate-spin" size={12} />
+                )}
+                {searchState === 'completed' && <CheckCircle2 size={12} />}
+                {searchState === 'failed' && <AlertTriangle size={12} />}
+                {searchState !== 'completed' && searchState !== 'failed' ? 'Working' :
+                  searchState === 'completed' ? 'Complete' : 'Stopped'}
               </span>
             </div>
-            <div className="terminal-body">
+
+            <ul className="pipeline-progress__timeline">
+              {scrapingLogs.length === 0 && (
+                <li className="pipeline-progress__item pipeline-progress__item--info">
+                  <span className="pipeline-progress__bullet" />
+                  <div className="pipeline-progress__content">
+                    <p className="pipeline-progress__text">Waiting to start...</p>
+                  </div>
+                </li>
+              )}
               {scrapingLogs.map((log, index) => {
-                let lineClass = 'line-log';
-                if (log.startsWith('[STEP]') || log.startsWith('→')) lineClass = 'line-step';
-                else if (log.startsWith('[SUCCESS]')) lineClass = 'line-success';
-                else if (log.startsWith('[ERROR]')) lineClass = 'line-error';
+                const level = traceLevel(log);
+                const friendly = toFriendlyTrace(log);
+                const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
                 return (
-                  <div key={index} className={`terminal-line ${lineClass}`}>
-                    {log}
-                  </div>
+                  <li
+                    key={`${index}-${log.slice(0, 24)}`}
+                    className={`pipeline-progress__item pipeline-progress__item--done pipeline-progress__item--${level}`}
+                  >
+                    <span className="pipeline-progress__bullet" />
+                    <div className="pipeline-progress__content">
+                      <span className="pipeline-progress__time">{time}</span>
+                      <p className="pipeline-progress__text">{friendly}</p>
+                    </div>
+                  </li>
                 );
               })}
-              {searchState !== 'completed' && searchState !== 'failed' && (
-                <div className="terminal-line line-step">
-                  <span className="animate-pulse">_</span>
-                </div>
+              {activePipelineStep && searchState !== 'completed' && searchState !== 'failed' && (
+                <li className="pipeline-progress__item pipeline-progress__item--current">
+                  <span className="pipeline-progress__bullet pipeline-progress__bullet--pulse" />
+                  <div className="pipeline-progress__content">
+                    <span className="pipeline-progress__time">now</span>
+                    <p className="pipeline-progress__text">{activePipelineStep.message}</p>
+                  </div>
+                </li>
               )}
-              <div ref={logEndRef} />
-            </div>
+            </ul>
+            <div ref={logEndRef} />
+            <p className="pipeline-progress__hint">Technical details are logged to your browser console.</p>
           </div>
 
           {/* Error Banner */}
           {searchState === 'failed' && (
-            <div style={{ background: 'rgba(181, 74, 58, 0.06)', border: '1px solid rgba(181, 74, 58, 0.15)', padding: '16px', borderRadius: '12px', color: COLORS.error, marginTop: '24px', fontSize: '0.9rem' }}>
+            <div style={{ background: 'rgba(184, 107, 107, 0.06)', border: '1px solid rgba(184, 107, 107, 0.15)', padding: '16px', borderRadius: '12px', color: COLORS.error, marginTop: '24px', fontSize: '0.9rem' }}>
               <h4 style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
                 <AlertTriangle size={16} /> Pipeline Execution Interrupted
               </h4>
@@ -638,16 +726,16 @@ export default function IndividualSearchPanel({ onComplete }) {
             <div className="results-table-container">
               <div style={{ padding: '20px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <h4 style={{ fontWeight: 600, fontSize: '1.05rem', color: 'var(--text-primary)' }}>
-                  Sourced leads ({scrapedLeads.length})
+                  New leads found ({scrapedLeads.length})
                 </h4>
                 <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  Saved to your lead list below
+                  Added to {segmentLabel} outreach drafts
                 </span>
               </div>
               
               {scrapedLeads.length === 0 ? (
                 <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                  No leads were sourced for this query. The listings may have been deduplicated or filtered by confidence score rules.
+                  No new leads matched this search. Results may have been deduplicated or filtered by confidence score rules.
                 </div>
               ) : (
                 <div style={{ overflowX: 'auto' }}>

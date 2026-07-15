@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
@@ -80,6 +80,7 @@ def _lead_payload(lead: BusinessLead) -> dict:
         "contact_linkedin": lead.contact_linkedin,
         "pipeline_stage": lead.pipeline_stage.value if lead.pipeline_stage else None,
         "source_query": lead.source_query,
+        "has_image": lead.image_data is not None,
         "created_at": lead.created_at,
         "updated_at": lead.updated_at,
     }
@@ -133,6 +134,14 @@ def create_lead(payload: LeadCreate, db: Session = Depends(get_db)):
             return {**_lead_payload(existing), "duplicate": True}
 
     lead = BusinessLead(**payload.model_dump())
+    if payload.google_place_id:
+        try:
+            from app.services.avatar3_tools import fetch_business_photo
+            img_data, img_type = fetch_business_photo(payload.google_place_id)
+            lead.image_data = img_data
+            lead.image_content_type = img_type
+        except Exception as exc:
+            logger.exception("Failed to fetch photo for place %s: %s", payload.google_place_id, exc)
     db.add(lead)
     try:
         db.flush()
@@ -243,6 +252,21 @@ def get_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
             key=lambda item: item["created_at"],
         ),
     }
+
+
+@router.get("/leads/{lead_id}/image")
+def get_lead_image(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+    lead = db.get(BusinessLead, lead_id)
+    if not lead or not lead.image_data:
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    import base64
+    try:
+        img_bytes = base64.b64decode(lead.image_data)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Invalid image encoding") from exc
+        
+    return Response(content=img_bytes, media_type=lead.image_content_type or "image/jpeg")
 
 
 @router.post("/leads/{lead_id}/notes")

@@ -60,6 +60,8 @@ class BusinessLead(Base):
         server_default=PipelineStage.new.value,
     )
     source_query: Mapped[str | None] = mapped_column(Text)
+    image_data: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
