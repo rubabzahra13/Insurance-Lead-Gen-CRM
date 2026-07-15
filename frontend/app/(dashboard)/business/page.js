@@ -434,8 +434,6 @@ function BusinessWorkspaceContent() {
     }
   };
 
-  };
-
   // Sourcing import: Add a searched business lead straight into the board
   const handleAddLead = async (business) => {
     const placeId = business.google_place_id || 'unknown';
