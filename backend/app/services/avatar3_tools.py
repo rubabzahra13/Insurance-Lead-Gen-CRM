@@ -237,3 +237,67 @@ def enrich_business_website(website: str | None, business_name: str | None = Non
         "contact_linkedin": result.get("contact_linkedin"),
         "source_text": source_text,
     }
+
+
+def fetch_business_photo(place_id: str) -> tuple[str | None, str | None]:
+    """
+    Fetches the first photo of the given Google Place ID using the Google Places API (New).
+    Returns (image_base64_string, content_type).
+    """
+    import base64
+    import logging
+    logger = logging.getLogger(__name__)
+
+    api_key = _places_api_key()
+    if not api_key:
+        logger.warning("PLACES_API_KEY is missing; skipping photo fetching.")
+        return None, None
+
+    if not place_id or place_id.startswith("dev-mock-place"):
+        logger.info("Mock place ID or empty ID; skipping photo fetching.")
+        return None, None
+
+    url = f"https://places.googleapis.com/v1/places/{place_id}"
+    headers = {
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": "photos"
+    }
+
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            resp = client.get(url, headers=headers)
+            if resp.status_code != 200:
+                logger.warning("Failed to fetch place details for photo: %s status: %d", place_id, resp.status_code)
+                return None, None
+            
+            place_data = resp.json()
+            photos = place_data.get("photos")
+            if not photos or not isinstance(photos, list) or len(photos) == 0:
+                logger.info("No photos found for place ID: %s", place_id)
+                return None, None
+            
+            photo_name = photos[0].get("name")
+            if not photo_name:
+                logger.info("First photo has no resource name for place ID: %s", place_id)
+                return None, None
+
+            media_url = f"https://places.googleapis.com/v1/{photo_name}/media"
+            params = {
+                "maxHeightPx": 800,
+                "key": api_key
+            }
+            
+            media_resp = client.get(media_url, params=params, follow_redirects=True)
+            if media_resp.status_code != 200:
+                logger.warning("Failed to fetch photo media for %s status: %d", photo_name, media_resp.status_code)
+                return None, None
+            
+            content_type = media_resp.headers.get("content-type") or "image/jpeg"
+            img_bytes = media_resp.content
+            img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+            return img_base64, content_type
+
+    except Exception as exc:
+        logger.exception("Error fetching business photo for place ID %s: %s", place_id, exc)
+        return None, None
+

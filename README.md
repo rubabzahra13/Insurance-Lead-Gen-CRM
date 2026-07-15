@@ -70,7 +70,8 @@ cd backend
 source venv/bin/activate
 pip install -r requirements.txt
 python -m app.migrations.run up
-node scripts/restart-dev.mjs
+#node scripts/restart-dev.mjs
+uvicorn app.main:app --reload --port 8000
 ```
 
 `restart-dev.mjs` clears stale port 8000, reloads only `app/` and `src/`, and auto-restarts if the server stops (e.g. after a stuck hot-reload).

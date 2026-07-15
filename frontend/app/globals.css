@@ -3731,6 +3731,36 @@ a {
   padding: 8px 8px 0;
 }
 
+.pipeline-card__media {
+  position: relative;
+  width: calc(100% - 16px);
+  height: 88px;
+  margin: 8px 8px 0;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #eef2f2;
+  border: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pipeline-card__image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.pipeline-card__image-placeholder {
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  opacity: 0.65;
+}
+
 .pipeline-card__label {
   display: block;
   width: 40px;

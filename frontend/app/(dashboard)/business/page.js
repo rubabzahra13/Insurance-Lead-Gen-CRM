@@ -7,7 +7,7 @@ import { COLORS, RGBA, BUSINESS_STAGES } from '../../../lib/colors';
 import { 
   Search, Plus, MapPin, Star, Phone, Globe, 
   ChevronRight, Loader2, AlertTriangle, CheckCircle2, 
-  KanbanSquare, Sliders, X, MessageSquare,
+  KanbanSquare, Sliders, X, MessageSquare, Building2,
   Clock, PlusCircle, ArrowRight, Sparkles, Activity, Table2
 } from 'lucide-react';
 
@@ -28,6 +28,7 @@ const STAGES = BUSINESS_STAGES;
 function BusinessWorkspaceContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
 
   // Route states
   const urlQuery = searchParams.get('q') || '';
@@ -131,6 +132,28 @@ function BusinessWorkspaceContent() {
                   >
                     <div className="pipeline-card__labels" aria-hidden="true">
                       <span className="pipeline-card__label" />
+                    </div>
+
+                    <div className="pipeline-card__media">
+                      {lead.has_image ? (
+                        <img
+                          src={`${apiBaseUrl}/api/avatar3/leads/${lead.id}/image`}
+                          alt={lead.business_name}
+                          className="pipeline-card__image"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                            const placeholder = e.currentTarget.nextElementSibling;
+                            if (placeholder) placeholder.style.display = 'flex';
+                          }}
+                        />
+                      ) : null}
+                      <div
+                        className="pipeline-card__image-placeholder"
+                        style={{ display: lead.has_image ? 'none' : 'flex' }}
+                        aria-hidden="true"
+                      >
+                        <Building2 size={22} />
+                      </div>
                     </div>
 
                     <div className="pipeline-card__body">
