@@ -8,7 +8,8 @@ import {
   Search, Plus, MapPin, Star, Phone, Globe, 
   ChevronRight, Loader2, AlertTriangle, CheckCircle2, 
   KanbanSquare, Sliders, X, MessageSquare, Building2,
-  Clock, PlusCircle, ArrowRight, Sparkles, Activity, Table2
+  Clock, PlusCircle, ArrowRight, Sparkles, Activity, Table2,
+  Check, AlertCircle
 } from 'lucide-react';
 
 const BUSINESS_WORKSPACE_SECTIONS = [
@@ -48,6 +49,7 @@ function BusinessWorkspaceContent() {
   const [searchError, setSearchError] = useState(false);
   const [searchValidationError, setSearchValidationError] = useState('');
   const [showSearchPanel, setShowSearchPanel] = useState(false);
+  const [addingLeads, setAddingLeads] = useState({});
 
   // Detail slide-over states (Step 3.7)
   const [selectedLeadId, setSelectedLeadId] = useState(initialLeadId);
@@ -58,7 +60,6 @@ function BusinessWorkspaceContent() {
   const [noteAuthor, setNoteAuthor] = useState('Peter');
   const [noteSaving, setNoteSaving] = useState(false);
   const [enriching, setEnriching] = useState(false);
-  const [approvingPlan, setApprovingPlan] = useState(false);
 
   // Toast notification
   const [toast, setToast] = useState(null); // { message: string, type: 'success' | 'error' }
@@ -364,35 +365,16 @@ function BusinessWorkspaceContent() {
     }
   };
 
-  const handleApproveFollowUp = async (planId) => {
-    if (!selectedLeadId || !planId) return;
-    setApprovingPlan(true);
-    try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
-      const res = await fetch(
-        `${apiBaseUrl}/api/avatar3/leads/${selectedLeadId}/follow-up-plans/${planId}/approve`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ send: true }),
-        }
-      );
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({}));
-        throw new Error(errBody.detail || 'Failed to approve follow-up');
-      }
-      await fetchLeadDetails(selectedLeadId);
-      showToast('Follow-up approved and outreach dispatched');
-    } catch (err) {
-      console.error(err);
-      showToast(err.message || 'Could not approve follow-up', 'error');
-    } finally {
-      setApprovingPlan(false);
-    }
-  };
+
 
   // Sourcing import: Add a searched business lead straight into the board
   const handleAddLead = async (business) => {
+    const placeId = business.google_place_id || 'unknown';
+    setAddingLeads(prev => ({
+      ...prev,
+      [placeId]: 'loading'
+    }));
+
     try {
       const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
       const res = await fetch(`${apiBaseUrl}/api/avatar3/leads`, {
@@ -410,21 +392,41 @@ function BusinessWorkspaceContent() {
         })
       });
 
-      if (!res.ok) throw new Error('Failed to create pipeline lead');
+      if (!res.ok) {
+        const errorBody = await res.json().catch(() => ({}));
+        throw new Error(errorBody.detail || 'Failed to create pipeline lead');
+      }
+
       const leadData = await res.json();
 
       if (leadData.duplicate) {
-        showToast(`"${leadData.business_name}" already exists. Opening details!`, 'success');
-        // Highlight / select existing lead
-        handleSelectLead(leadData.id);
+        showToast(`"${leadData.business_name}" is already in the pipeline.`, 'success');
+        // Ensure it's in our leads list so the UI updates to show "Added"
+        setLeads(prev => {
+          if (prev.some(l => l.google_place_id === leadData.google_place_id)) {
+            return prev;
+          }
+          return [leadData, ...prev];
+        });
       } else {
         showToast(`Added "${leadData.business_name}" to pipeline!`, 'success');
         setLeads(prev => [leadData, ...prev]);
-        setWorkspaceSection('pipeline');
       }
+
+      // Clear any errors/loading on success
+      setAddingLeads(prev => {
+        const next = { ...prev };
+        delete next[placeId];
+        return next;
+      });
     } catch (err) {
       console.error(err);
-      showToast('Failed to add lead to pipeline.', 'error');
+      const errMsg = err.message || 'Failed to add lead to pipeline.';
+      showToast(errMsg, 'error');
+      setAddingLeads(prev => ({
+        ...prev,
+        [placeId]: { status: 'error', message: errMsg }
+      }));
     }
   };
 
@@ -664,27 +666,52 @@ function BusinessWorkspaceContent() {
                 <p className="business-tab-state__muted">No businesses found for this query.</p>
               ) : (
                 <div className="business-search-results-grid">
-                  {searchResults.map((business, idx) => (
-                    <div key={business.google_place_id || idx} className="glass-card business-search-card">
-                      <div>
-                        <h5 className="business-search-card__title">{business.business_name}</h5>
-                        <div className="business-search-card__meta">
-                          <Star size={10} style={{ color: COLORS.warning, fill: COLORS.warning }} />
-                          <span>{business.rating || 'No rating'}</span>
-                          <span>·</span>
-                          <span>{business.open_status || 'UNKNOWN'}</span>
+                  {searchResults.map((business, idx) => {
+                    const placeId = business.google_place_id || 'unknown';
+                    const isAdded = leads.some(l => l.google_place_id === business.google_place_id);
+                    const isAdding = addingLeads[placeId] === 'loading';
+                    const addError = addingLeads[placeId]?.status === 'error' ? addingLeads[placeId].message : null;
+
+                    return (
+                      <div key={business.google_place_id || idx} className="glass-card business-search-card">
+                        <div>
+                          <h5 className="business-search-card__title">{business.business_name}</h5>
+                          <div className="business-search-card__meta">
+                            <Star size={10} style={{ color: COLORS.warning, fill: COLORS.warning }} />
+                            <span>{business.rating || 'No rating'}</span>
+                            <span>·</span>
+                            <span>{business.open_status || 'UNKNOWN'}</span>
+                          </div>
+                          <p className="business-search-card__address">
+                            <MapPin size={10} />
+                            {business.address || 'No address'}
+                          </p>
+                          {addError && (
+                            <div className="business-search-card__error-inline">
+                              <AlertCircle size={10} />
+                              <span>{addError}</span>
+                            </div>
+                          )}
                         </div>
-                        <p className="business-search-card__address">
-                          <MapPin size={10} />
-                          {business.address || 'No address'}
-                        </p>
+                        {isAdded ? (
+                          <div className="business-search-card__added">
+                            <Check size={12} />
+                            Added
+                          </div>
+                        ) : isAdding ? (
+                          <button type="button" disabled className="business-search-card__adding">
+                            <Loader2 className="animate-spin" size={12} />
+                            Adding...
+                          </button>
+                        ) : (
+                          <button type="button" onClick={() => handleAddLead(business)} className="business-search-card__add">
+                            <Plus size={12} />
+                            Add to pipeline
+                          </button>
+                        )}
                       </div>
-                      <button type="button" onClick={() => handleAddLead(business)} className="business-search-card__add">
-                        <Plus size={12} />
-                        Add to pipeline
-                      </button>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -820,32 +847,13 @@ function BusinessWorkspaceContent() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <h3 style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '6px' }}>{leadDetails.business_name}</h3>
-                        {leadDetails.address && (
-                          <p style={{ color: 'var(--text-secondary)', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '4px' }}>
-                            <MapPin size={11} />{leadDetails.address}
-                          </p>
-                        )}
-                        <div style={{ color: 'var(--text-muted)', fontSize: '0.72rem', marginBottom: '10px', fontStyle: 'italic' }}>
-                          Original Search Query: {leadDetails.source_query || 'no source query'}
-                        </div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
                           <span style={{ fontSize: '0.68rem', fontWeight: 700, textTransform: 'uppercase', padding: '3px 10px', borderRadius: '20px', border: `1px solid ${stageInfo.color}55`, color: stageInfo.color, background: stageInfo.bg }}>
                             {stageInfo.label}
                           </span>
-                          {leadDetails.rating && (
-                            <span style={{ fontSize: '0.72rem', color: COLORS.warning, display: 'flex', alignItems: 'center', gap: '3px', fontWeight: 600 }}>
-                              <Star size={11} style={{ fill: COLORS.warning }} />{leadDetails.rating}
-                            </span>
-                          )}
-                          {leadDetails.open_status && (
-                            <span style={{ fontSize: '0.68rem', fontWeight: 600, color: leadDetails.open_status === 'OPERATIONAL' ? COLORS.success : COLORS.warning }}>{leadDetails.open_status}</span>
-                          )}
-                          {leadDetails.phone && (
-                            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '3px' }}><Phone size={10} />{leadDetails.phone}</span>
-                          )}
-                          {leadDetails.website && (
-                            <a href={leadDetails.website} target="_blank" rel="noreferrer" style={{ fontSize: '0.72rem', color: COLORS.oldRose, display: 'flex', alignItems: 'center', gap: '3px' }}><Globe size={10} />Website</a>
-                          )}
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem', fontStyle: 'italic' }}>
+                            Search Query: {leadDetails.source_query || 'no source query'}
+                          </span>
                         </div>
                       </div>
                       <button onClick={() => handleSelectLead(null)} style={{ background: COLORS.white, border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-secondary)', padding: '6px', cursor: 'pointer', flexShrink: 0 }}>
@@ -859,40 +867,128 @@ function BusinessWorkspaceContent() {
               {/* Drawer Content */}
               <div style={{ flex: 1, overflowY: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px', minHeight: 0 }}>
                 
-                {/* Contact enrichment card (Step 3.7 Agent output) */}
+                {/* Business & Contact Details Card */}
                 <div className="glass-card" style={{ padding: '20px', border: '1px solid var(--border-color)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                    <h4 style={{ fontSize: '0.85rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', margin: 0, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <Sparkles size={14} style={{ color: COLORS.textMuted }} />
-                      Contact & Owner Details
-                    </h4>
-                    {leadDetails.website && (
-                      <button
-                        type="button"
-                        onClick={handleEnrichFromWebsite}
-                        disabled={enriching}
-                        className="btn-primary"
-                        style={{ padding: '6px 12px', fontSize: '0.75rem' }}
-                      >
-                        {enriching ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}
-                        {enriching ? 'Enriching…' : 'Enrich from website'}
-                      </button>
-                    )}
-                  </div>
+                  <h4 style={{ fontSize: '0.85rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-secondary)', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Building2 size={14} style={{ color: COLORS.textMuted }} />
+                    Business Profile
+                  </h4>
                   
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.82rem' }}>
-                    {[['Owner', leadDetails.owner_name], ['Manager', leadDetails.manager_name], ['Email', leadDetails.contact_email]].map(([label, val]) => (
-                      <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ color: 'var(--text-muted)' }}>{label}:</span>
-                        <span style={{ color: val ? 'var(--text-primary)' : 'var(--text-muted)', fontWeight: val ? 600 : 400, fontStyle: val ? 'normal' : 'italic' }}>{val || 'Not found'}</span>
-                      </div>
-                    ))}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ color: 'var(--text-muted)' }}>LinkedIn:</span>
-                      {leadDetails.contact_linkedin
-                        ? <a href={leadDetails.contact_linkedin} target="_blank" rel="noreferrer" style={{ color: COLORS.oldRose, display: 'flex', alignItems: 'center', gap: '3px' }}>Profile <ArrowRight size={10} /></a>
-                        : <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>Not found</span>}
+                  {/* Prominent Business Info (Places Data) */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '12px', paddingBottom: '16px', borderBottom: '1px solid var(--border-color)', marginBottom: '16px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Business Name</span>
+                      <span style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-primary)' }}>{leadDetails.business_name}</span>
                     </div>
+
+                    {leadDetails.address && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Address</span>
+                        <span style={{ fontSize: '0.82rem', color: 'var(--text-primary)' }}>{leadDetails.address}</span>
+                      </div>
+                    )}
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                      {leadDetails.phone && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Phone</span>
+                          <a href={`tel:${leadDetails.phone}`} style={{ fontSize: '0.82rem', color: COLORS.oldRose, fontWeight: 500 }}>{leadDetails.phone}</a>
+                        </div>
+                      )}
+
+                      {leadDetails.website && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Website</span>
+                          <a href={leadDetails.website} target="_blank" rel="noreferrer" style={{ fontSize: '0.82rem', color: COLORS.oldRose, display: 'flex', alignItems: 'center', gap: '3px', fontWeight: 500 }}>
+                            Visit Website <Globe size={11} />
+                          </a>
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                      {leadDetails.rating && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Google Rating</span>
+                          <span style={{ fontSize: '0.82rem', color: COLORS.warning, display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600 }}>
+                            <Star size={12} style={{ fill: COLORS.warning }} /> {leadDetails.rating} / 5
+                          </span>
+                        </div>
+                      )}
+
+                      {leadDetails.open_status && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Status</span>
+                          <span style={{ fontSize: '0.82rem', fontWeight: 600, color: leadDetails.open_status === 'OPERATIONAL' ? COLORS.success : COLORS.warning }}>
+                            {leadDetails.open_status}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Secondary Enrichment Contact Details */}
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                      <h5 style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-secondary)', margin: 0 }}>
+                        Contact Details
+                      </h5>
+                      {leadDetails.website && (
+                        <button
+                          type="button"
+                          onClick={handleEnrichFromWebsite}
+                          disabled={enriching}
+                          className="btn-primary"
+                          style={{ padding: '4px 10px', fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+                        >
+                          {enriching ? <Loader2 size={12} className="spin" /> : <Sparkles size={12} />}
+                          {enriching ? 'Enriching…' : 'Enrich Website'}
+                        </button>
+                      )}
+                    </div>
+
+                    {(() => {
+                      const hasEnrichmentData = !!(leadDetails.owner_name || leadDetails.manager_name || leadDetails.contact_email || leadDetails.contact_linkedin);
+                      
+                      if (!hasEnrichmentData) {
+                        return (
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontStyle: 'italic', padding: '4px 0' }}>
+                            No additional contact details found.
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.8rem' }}>
+                          {leadDetails.owner_name && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span style={{ color: 'var(--text-muted)' }}>Owner:</span>
+                              <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{leadDetails.owner_name}</span>
+                            </div>
+                          )}
+                          {leadDetails.manager_name && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span style={{ color: 'var(--text-muted)' }}>Manager:</span>
+                              <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{leadDetails.manager_name}</span>
+                            </div>
+                          )}
+                          {leadDetails.contact_email && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span style={{ color: 'var(--text-muted)' }}>Email:</span>
+                              <a href={`mailto:${leadDetails.contact_email}`} style={{ color: COLORS.oldRose, fontWeight: 500 }}>{leadDetails.contact_email}</a>
+                            </div>
+                          )}
+                          {leadDetails.contact_linkedin && (
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span style={{ color: 'var(--text-muted)' }}>LinkedIn:</span>
+                              <a href={leadDetails.contact_linkedin} target="_blank" rel="noreferrer" style={{ color: COLORS.oldRose, display: 'flex', alignItems: 'center', gap: '3px', fontWeight: 500 }}>
+                                View Profile <ArrowRight size={10} />
+                              </a>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -927,31 +1023,15 @@ function BusinessWorkspaceContent() {
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span style={{ fontSize: '0.7rem', fontWeight: 700, color: COLORS.warning, textTransform: 'uppercase', background: RGBA.amber08, padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(180, 83, 9, 0.18)' }}>
-                            {plan.suggested_channel}
+                            Suggested Channel: {plan.suggested_channel}
                           </span>
                           <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>{new Date(plan.created_at).toLocaleDateString()}</span>
                         </div>
                         <div style={{ background: COLORS.white, border: '1px solid var(--border-color)', borderRadius: '6px', padding: '12px', fontSize: '0.82rem', color: 'var(--text-primary)', lineHeight: '1.55' }}>
+                          <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '4px' }}>RECOMMENDED ACTION</div>
                           {plan.recommended_action}
                         </div>
                         <p style={{ fontSize: '0.73rem', color: 'var(--text-muted)', lineHeight: '1.45' }}><strong>Reasoning:</strong> {plan.reasoning}</p>
-                        {plan.status === 'approved' ? (
-                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', color: COLORS.success, fontSize: '0.8rem', fontWeight: 600 }}>
-                            <CheckCircle2 size={14} />
-                            Approved
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => handleApproveFollowUp(plan.id)}
-                            disabled={approvingPlan}
-                            className="btn-primary"
-                            style={{ alignSelf: 'flex-start', padding: '8px 16px', fontSize: '0.8rem' }}
-                          >
-                            {approvingPlan ? <Loader2 size={14} className="spin" /> : <CheckCircle2 size={14} />}
-                            {approvingPlan ? 'Sending…' : 'Approve & Send'}
-                          </button>
-                        )}
                       </div>
                     );
                   })()}

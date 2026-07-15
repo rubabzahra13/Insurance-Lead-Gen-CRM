@@ -24,7 +24,6 @@ from app.session import SessionLocal
 from app.services.followup_planning import plan_follow_up
 from app.services.reclassification import reclassify_note
 from app.services.avatar3_tools import enrich_business_website
-from app.services.outreach_send import OutreachSendError, dispatch_outreach
 
 
 router = APIRouter(prefix="/api/avatar3", tags=["avatar3"])
@@ -242,7 +241,6 @@ def get_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
                 "recommended_action": item.recommended_action,
                 "suggested_channel": item.suggested_channel,
                 "reasoning": item.reasoning,
-                "status": item.status,
                 "created_at": item.created_at,
             }
             for item in lead.follow_up_plans
@@ -433,7 +431,6 @@ def create_note(lead_id: uuid.UUID, payload: NoteCreate, db: Session = Depends(g
                 "recommended_action": item.recommended_action,
                 "suggested_channel": item.suggested_channel,
                 "reasoning": item.reasoning,
-                "status": item.status,
                 "created_at": item.created_at,
             }
             for item in lead.follow_up_plans
@@ -470,74 +467,3 @@ def enrich_lead_contacts(lead_id: uuid.UUID, db: Session = Depends(get_db)):
     db.refresh(lead)
     return {**_lead_payload(lead), "enrichment": enriched}
 
-
-class FollowUpApproveRequest(BaseModel):
-    send: bool = True
-
-
-@router.post("/leads/{lead_id}/follow-up-plans/{plan_id}/approve")
-def approve_follow_up_plan(
-    lead_id: uuid.UUID,
-    plan_id: uuid.UUID,
-    payload: FollowUpApproveRequest,
-    db: Session = Depends(get_db),
-):
-    lead = db.scalar(
-        select(BusinessLead)
-        .where(BusinessLead.id == lead_id)
-        .options(selectinload(BusinessLead.follow_up_plans))
-    )
-    if not lead:
-        raise HTTPException(status_code=404, detail="Lead not found")
-
-    plan = next((item for item in lead.follow_up_plans if item.id == plan_id), None)
-    if not plan:
-        raise HTTPException(status_code=404, detail="Follow-up plan not found")
-    if plan.status == "approved":
-        return {"lead_id": str(lead.id), "plan_id": str(plan.id), "status": plan.status}
-
-    delivery: list[dict] = []
-    if payload.send:
-        channel = str(plan.suggested_channel or "email").strip().lower()
-        channels = ["email", "sms"] if channel in {"both", "email+sms", "email and sms"} else (
-            ["sms"] if channel in {"sms", "text", "phone"} else ["email"]
-        )
-        try:
-            delivery = dispatch_outreach(
-                channels=channels,
-                to_email=lead.contact_email,
-                to_phone=lead.phone,
-                subject=f"Follow-up: {lead.business_name}",
-                body=plan.recommended_action,
-            )
-        except OutreachSendError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        interaction_channel = InteractionChannel.email if "email" in channels else InteractionChannel.phone
-        db.add(
-            BusinessInteraction(
-                business_lead_id=lead.id,
-                channel=interaction_channel,
-                direction=InteractionDirection.outbound,
-                summary=plan.recommended_action[:500],
-            )
-        )
-
-    plan.status = "approved"
-    db.add(
-        PipelineEvent(
-            business_lead_id=lead.id,
-            event_type=PipelineEventType.follow_up_generated,
-            from_stage=lead.pipeline_stage,
-            to_stage=lead.pipeline_stage,
-            description=f"Follow-up plan approved{' and sent' if payload.send else ''}: {plan.recommended_action[:120]}",
-        )
-    )
-    db.commit()
-    db.refresh(plan)
-    return {
-        "lead_id": str(lead.id),
-        "plan_id": str(plan.id),
-        "status": plan.status,
-        "delivery": delivery,
-    }

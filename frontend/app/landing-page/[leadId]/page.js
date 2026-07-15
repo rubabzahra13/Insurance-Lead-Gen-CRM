@@ -65,7 +65,7 @@ const INPUT_STYLE = {
   width: '100%',
 };
 
-const LANDING_VIDEO_ID = process.env.NEXT_PUBLIC_LANDING_VIDEO_YOUTUBE_ID || 'wRpsFyb_lp4';
+const LANDING_VIDEO_ID = process.env.NEXT_PUBLIC_LANDING_VIDEO_YOUTUBE_ID || '_Vn3_GWxK6g';
 
 export default function LandingPage() {
   const { leadId } = useParams();
@@ -234,7 +234,7 @@ export default function LandingPage() {
             }}>
               <iframe 
                 style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', border: 0 }}
-                src={`https://www.youtube.com/embed/${LANDING_VIDEO_ID}`}
+                src={`https://www.youtube.com/embed/${LANDING_VIDEO_ID}${LANDING_VIDEO_ID === '_Vn3_GWxK6g' ? '?start=11' : ''}`}
                 title="Insurance Career Overview"
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
                 allowFullScreen

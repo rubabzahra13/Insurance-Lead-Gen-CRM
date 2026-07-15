@@ -2818,6 +2818,11 @@ a {
   opacity: 0;
 }
 
+.individual-list-sort option {
+  color: var(--text-primary);
+  background-color: var(--white);
+}
+
 .individual-list-sort-wrap:focus-within {
   border-color: var(--border-hover);
   box-shadow: 0 0 0 2px var(--accent-primary-subtle);
@@ -4043,6 +4048,51 @@ a {
 
 .business-search-card__add:hover {
   background: var(--accent-primary-subtle);
+}
+
+.business-search-card__added {
+  width: 100%;
+  margin-top: 4px;
+  background: rgba(75, 85, 99, 0.06);
+  border: 1px solid rgba(75, 85, 99, 0.15);
+  border-radius: 8px;
+  color: var(--text-muted);
+  padding: 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: default;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.business-search-card__adding {
+  width: 100%;
+  margin-top: 4px;
+  background: var(--accent-secondary-subtle);
+  border: none;
+  border-radius: 8px;
+  color: var(--old-rose);
+  padding: 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: not-allowed;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  opacity: 0.7;
+}
+
+.business-search-card__error-inline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+  color: var(--error-color, #b86b6b);
+  margin-top: 6px;
+  font-weight: 500;
 }
 
 .business-tab-toolbar {
