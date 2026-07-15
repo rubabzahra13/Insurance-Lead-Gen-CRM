@@ -81,6 +81,8 @@ function RecruitmentWorkspaceContent() {
   const [sendChannel, setSendChannel] = useState('email'); // 'email' | 'sms' | 'both'
   const [contactEmail, setContactEmail] = useState('');
   const [contactPhone, setContactPhone] = useState('');
+  const [emailError, setEmailError] = useState('');
+  const [phoneError, setPhoneError] = useState('');
   const [toast, setToast] = useState(null); // { message: string, type: 'success' | 'error' }
 
   // Show Toast Helper
@@ -187,6 +189,8 @@ function RecruitmentWorkspaceContent() {
       setRightError(false);
       setNoDraftExists(false);
       setActiveTab('profile');
+      setEmailError('');
+      setPhoneError('');
 
       try {
         const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
@@ -293,11 +297,40 @@ function RecruitmentWorkspaceContent() {
     router.push(`?${params.toString()}`);
   };
 
-  // Dispatch message sender
-  const handleSendOutreach = async () => {
+  // Dispatch message sender via mailto or sms URI schemes, and update backend status
+  const handleSendVia = async (channel) => {
     if (!selectedLeadId) return;
 
-    const channels = sendChannel === 'both' ? ['email', 'sms'] : [sendChannel];
+    if (channel === 'email') {
+      if (!contactEmail || !contactEmail.trim()) {
+        setEmailError('Please enter an email address.');
+        return;
+      }
+      setEmailError('');
+      
+      const firstName = selectedLeadDetails?.name ? selectedLeadDetails.name.split(' ')[0] : 'you';
+      const subject = `Opportunity for ${firstName}`;
+      // RFC 2368: mailto body newlines must be CRLF (\r\n) which URL-encodes to %0D%0A
+      const formattedBody = draftMessage.replace(/\r?\n/g, '\r\n');
+      const mailtoLink = `mailto:${encodeURIComponent(contactEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(formattedBody)}`;
+      console.log("Constructed mailto link:", mailtoLink);
+      
+      // Trigger navigation to open default email handler
+      window.location.href = mailtoLink;
+    } else if (channel === 'sms') {
+      if (!contactPhone || !contactPhone.trim()) {
+        setPhoneError('Please enter a phone number.');
+        return;
+      }
+      setPhoneError('');
+      
+      // Note: exact query param syntax for the body varies slightly by OS/handler — implement the commonly-supported form
+      const smsLink = `sms:${encodeURIComponent(contactPhone)}?&body=${encodeURIComponent(draftMessage)}`;
+      console.log("Constructed sms link:", smsLink);
+      
+      // Trigger navigation to open default SMS handler
+      window.location.href = smsLink;
+    }
 
     try {
       const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
@@ -305,7 +338,7 @@ function RecruitmentWorkspaceContent() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          channels,
+          channels: [channel],
           message: draftMessage,
           to_email: contactEmail || undefined,
           to_phone: contactPhone || undefined,
@@ -318,9 +351,7 @@ function RecruitmentWorkspaceContent() {
       }
 
       const resData = await sendRes.json();
-      const deliveryNote = resData.delivery?.map((d) => d.detail).filter(Boolean).join(' · ');
-      
-      showToast(deliveryNote ? `Message sent. ${deliveryNote}` : 'Outreach message sent successfully!');
+      showToast(channel === 'email' ? 'Email draft opened!' : 'SMS draft opened!');
       
       // Update local leads list status in-memory for instant feedback
       setLeads(prev => {
@@ -698,7 +729,7 @@ function RecruitmentWorkspaceContent() {
           {/* Status Filter Selector */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
             <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 500 }}>Status:</span>
-            <div style={{ display: 'flex', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', padding: '2px', border: '1px solid var(--border-color)' }}>
+            <div style={{ display: 'flex', background: RGBA.neutral06, borderRadius: '8px', padding: '2px', border: '1px solid var(--border-color)' }}>
               {['draft', 'sent'].map((status) => (
                 <button
                   key={status}
@@ -1088,20 +1119,28 @@ function RecruitmentWorkspaceContent() {
                         <input
                           type="email"
                           value={contactEmail}
-                          onChange={(e) => setContactEmail(e.target.value)}
+                          onChange={(e) => {
+                            setContactEmail(e.target.value);
+                            setEmailError('');
+                          }}
                           placeholder="lead@example.com"
-                          style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--border-color)', fontSize: '0.82rem' }}
+                          style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: emailError ? '1px solid var(--error-color, #b86b6b)' : '1px solid var(--border-color)', fontSize: '0.82rem' }}
                         />
+                        {emailError && <span style={{ color: 'var(--error-color, #b86b6b)', fontSize: '0.72rem', marginTop: '2px', display: 'block' }}>{emailError}</span>}
                       </div>
                       <div>
                         <label style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Phone (SMS)</label>
                         <input
                           type="tel"
                           value={contactPhone}
-                          onChange={(e) => setContactPhone(e.target.value)}
+                          onChange={(e) => {
+                            setContactPhone(e.target.value);
+                            setPhoneError('');
+                          }}
                           placeholder="+1 555 000 0000"
-                          style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid var(--border-color)', fontSize: '0.82rem' }}
+                          style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: phoneError ? '1px solid var(--error-color, #b86b6b)' : '1px solid var(--border-color)', fontSize: '0.82rem' }}
                         />
+                        {phoneError && <span style={{ color: 'var(--error-color, #b86b6b)', fontSize: '0.72rem', marginTop: '2px', display: 'block' }}>{phoneError}</span>}
                       </div>
                     </div>
 
@@ -1126,7 +1165,7 @@ function RecruitmentWorkspaceContent() {
                       }}
                     />
 
-                    <div className="individual-compose-footer">
+                    <div className="individual-compose-footer" style={{ flexWrap: 'wrap', gap: '12px' }}>
                       <span className="individual-compose-footer__count">
                         {draftMessage.length} characters
                       </span>
@@ -1136,13 +1175,36 @@ function RecruitmentWorkspaceContent() {
                           Sent
                         </span>
                       ) : (
-                        <button
-                          className="btn-primary individual-compose-footer__send"
-                          onClick={handleSendOutreach}
-                        >
-                          <Send size={14} />
-                          Send
-                        </button>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'flex-end' }}>
+                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            {(sendChannel === 'email' || sendChannel === 'both') && (
+                              <button
+                                type="button"
+                                className="btn-primary individual-compose-footer__send"
+                                onClick={() => handleSendVia('email')}
+                              >
+                                <Send size={14} />
+                                Send Email
+                              </button>
+                            )}
+                            {(sendChannel === 'sms' || sendChannel === 'both') && (
+                              <button
+                                type="button"
+                                className="btn-primary individual-compose-footer__send"
+                                onClick={() => handleSendVia('sms')}
+                                style={{ background: 'var(--old-rose)', borderColor: 'var(--old-rose)' }}
+                              >
+                                <Send size={14} />
+                                Send SMS
+                              </button>
+                            )}
+                          </div>
+                          {(sendChannel === 'sms' || sendChannel === 'both') && (
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textAlign: 'right' }}>
+                              Opens your device's messaging app — availability depends on your OS
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
                   </div>

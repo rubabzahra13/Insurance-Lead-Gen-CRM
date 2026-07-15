@@ -45,12 +45,18 @@ frontend_url = _get_env_any(
 if frontend_url and not frontend_url.startswith(("http://", "https://")):
     frontend_url = f"https://{frontend_url}"
 
-origins = {
+# Ensure frontend_url includes a scheme; if VERCEL_URL was provided it may lack one.
+if frontend_url and not frontend_url.startswith("http"):
+    # prefer https for deployed hosts
+    frontend_url = f"https://{frontend_url}"
+
+# Normalize origins into a deterministic list (FastAPI expects a list/sequence)
+origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    frontend_url,
-}
-origins.discard("")
+]
+if frontend_url and frontend_url not in origins:
+    origins.append(frontend_url)
 
 
 @asynccontextmanager
@@ -62,15 +68,23 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="LeadGen API", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    # Allow any local dev port, plus common deployed frontend hosts.
-    allow_origin_regex=r"^(https://.*\.vercel\.app|https://.*\.ngrok-free\.(app|dev|io)|http://(localhost|127\.0\.0\.1):\d+)$",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+# Build CORS kwargs conditionally (allow-all in development for ngrok/preview ease)
+cors_kwargs = {
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
+if os.getenv("NODE_ENV", "").lower() == "development" or os.getenv("DEV_CORS_ALLOW_ALL", "").lower() == "true":
+    cors_kwargs["allow_origins"] = ["*"]
+    cors_debug_desc = "allow_origins=['*']"
+else:
+    cors_kwargs["allow_origins"] = origins
+    cors_kwargs["allow_origin_regex"] = r"^(https://.*\.vercel\.app|https://.*\.ngrok-free\.(app|dev|io)|http://(localhost|127\.0\.0\.1):\d+)$"
+    cors_debug_desc = f"allow_origins={origins} allow_origin_regex={cors_kwargs['allow_origin_regex']}"
+
+app.add_middleware(CORSMiddleware, **cors_kwargs)
+print(f"CORS configured: {cors_debug_desc}")
 app.include_router(avatar12_router)
 app.include_router(avatar3_router)
 app.include_router(avatar3_tools_router)
