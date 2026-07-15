@@ -9,7 +9,7 @@ import {
   ChevronRight, Loader2, AlertTriangle, CheckCircle2, 
   KanbanSquare, Sliders, X, MessageSquare, Building2,
   Clock, PlusCircle, ArrowRight, Sparkles, Activity, Table2,
-  Check, AlertCircle
+  Check, AlertCircle, Trash2
 } from 'lucide-react';
 
 const BUSINESS_WORKSPACE_SECTIONS = [
@@ -131,8 +131,36 @@ function BusinessWorkspaceContent() {
                     }}
                     onClick={() => handleSelectLead(lead.id)}
                   >
-                    <div className="pipeline-card__labels" aria-hidden="true">
-                      <span className="pipeline-card__label" />
+                    <div className="pipeline-card__labels" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span className="pipeline-card__label" aria-hidden="true" />
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteLead(lead);
+                        }}
+                        className="pipeline-card__delete-btn"
+                        title="Remove lead"
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: 'var(--text-muted)',
+                          padding: '4px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          borderRadius: '4px',
+                          transition: 'all 0.2s',
+                          marginRight: '6px',
+                          marginTop: '2px',
+                          zIndex: 10
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.color = '#ef4444'; e.currentTarget.style.background = '#fee2e2'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'transparent'; }}
+                      >
+                        <Trash2 size={13} />
+                      </button>
                     </div>
 
                     <div className="pipeline-card__media">
@@ -478,6 +506,38 @@ function BusinessWorkspaceContent() {
     }
   };
 
+  const handleDeleteLead = async (lead) => {
+    const confirmDelete = window.confirm(`Remove ${lead.business_name} from the pipeline? This can't be undone.`);
+    if (!confirmDelete) return;
+
+    // Optimistic UI updates
+    const previousLeads = [...leads];
+    setLeads(prev => prev.filter(l => l.id !== lead.id));
+    
+    // Close the slide-over cleanly if this lead is currently open
+    if (selectedLeadId === lead.id) {
+      handleSelectLead(null);
+    }
+
+    try {
+      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+      const deleteRes = await fetch(`${apiBaseUrl}/api/avatar3/leads/${lead.id}`, {
+        method: 'DELETE'
+      });
+
+      if (!deleteRes.ok) {
+        throw new Error('Deletion rejected by server');
+      }
+
+      showToast(`Lead ${lead.business_name} removed from the pipeline.`);
+    } catch (err) {
+      console.error(err);
+      // Revert in-memory changes
+      setLeads(previousLeads);
+      showToast(`Failed to remove lead: ${err.message || 'unknown error'}`, 'error');
+    }
+  };
+
   const handleDrop = (e, toStage) => {
     e.preventDefault();
     const leadId = e.dataTransfer.getData('text/plain');
@@ -763,6 +823,7 @@ function BusinessWorkspaceContent() {
                         <th>Address</th>
                         <th>Rating</th>
                         <th>Phone</th>
+                        <th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -803,6 +864,33 @@ function BusinessWorkspaceContent() {
                             <td>{lead.address || '—'}</td>
                             <td>{lead.rating || '—'}</td>
                             <td>{lead.phone || '—'}</td>
+                            <td>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteLead(lead);
+                                }}
+                                className="pipeline-card__delete-btn"
+                                title="Remove lead"
+                                style={{
+                                  background: 'transparent',
+                                  border: 'none',
+                                  color: 'var(--text-muted)',
+                                  padding: '4px 8px',
+                                  cursor: 'pointer',
+                                  borderRadius: '4px',
+                                  transition: 'all 0.2s',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center'
+                                }}
+                                onMouseEnter={(e) => { e.currentTarget.style.color = '#ef4444'; e.currentTarget.style.background = '#fee2e2'; }}
+                                onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'transparent'; }}
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </td>
                           </tr>
                         ))}
                     </tbody>

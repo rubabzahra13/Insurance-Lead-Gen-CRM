@@ -467,3 +467,13 @@ def enrich_lead_contacts(lead_id: uuid.UUID, db: Session = Depends(get_db)):
     db.refresh(lead)
     return {**_lead_payload(lead), "enrichment": enriched}
 
+
+@router.delete("/leads/{lead_id}")
+def delete_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+    lead = db.get(BusinessLead, lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    db.delete(lead)
+    db.commit()
+    return {"ok": True, "message": f"Lead {lead_id} successfully deleted"}
+
