@@ -10,7 +10,6 @@ from app.models.avatar12 import AvatarLead, AvatarType, LeadDraft
 from app.routes.avatar12_leads import get_lead
 from app.models.base import Base
 from app.services.avatar12_drafts import persist_avatar12_lead
-from app.services.llm.client import LLMResponseError
 
 
 def _make_session():
@@ -23,11 +22,11 @@ def _make_session():
     return sessionmaker(bind=engine, autoflush=False, autocommit=False)()
 
 
-def test_persist_avatar12_lead_skips_draft_when_llm_fails():
+def test_persist_avatar12_lead_creates_template_draft_when_llm_fails():
     db = _make_session()
 
-    def fake_generate_structured(**kwargs):
-        raise LLMResponseError("invalid JSON")
+    def fake_openai_call(**kwargs):
+        return None
 
     result = persist_avatar12_lead(
         db=db,
@@ -41,18 +40,21 @@ def test_persist_avatar12_lead_skips_draft_when_llm_fails():
         linkedin_url="https://linkedin.com/in/jane-doe",
         search_prompt="open to work insurance sales",
         source_snapshot="{}",
-        client_call=fake_generate_structured,
+        openai_call=fake_openai_call,
     )
 
-    assert result["draft_created"] is False
+    assert result["draft_created"] is True
     assert db.query(AvatarLead).count() == 1
-    assert db.query(LeadDraft).count() == 0
+    assert db.query(LeadDraft).count() == 1
+    draft = db.query(LeadDraft).one()
+    assert "Jane" in draft.message
+    assert draft.status == "draft"
 
 
 def test_persist_avatar12_lead_creates_retrievable_draft():
     db = _make_session()
 
-    def fake_generate_structured(**kwargs):
+    def fake_openai_call(**kwargs):
         prompt_lines = {
             line.split(": ", 1)[0]: line.split(": ", 1)[1]
             for line in kwargs["user_prompt"].splitlines()
@@ -80,7 +82,7 @@ def test_persist_avatar12_lead_creates_retrievable_draft():
         linkedin_url="https://linkedin.com/in/jane-doe",
         search_prompt="open to work insurance sales",
         source_snapshot="{}",
-        client_call=fake_generate_structured,
+        openai_call=fake_openai_call,
     )
 
     lead_id = result["id"]

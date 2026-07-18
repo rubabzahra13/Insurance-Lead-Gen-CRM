@@ -2,18 +2,31 @@ export function buildGoogleQuery(searchPrompt) {
   return `site:linkedin.com/in ${searchPrompt}`;
 }
 
-export function searchOnlyPrompt(searchPrompt) {
+export function searchOnlyPrompt(searchPrompt, recipe = null) {
   const googleQuery = buildGoogleQuery(searchPrompt);
+  const searchInstructions = recipe
+    ? [recipe, '', 'Include every matching person you see on each search results page — do not skip profiles on a page.']
+    : [
+        `Search the web for LinkedIn profiles matching: "${googleQuery}"`,
+        'Run up to 3 searches if needed. Focus on linkedin.com/in profile pages.',
+        'Include every matching person you see on each search results page — do not skip profiles on a page.',
+      ];
+
   return [
-    `Search the web for LinkedIn profiles matching: "${googleQuery}"`,
-    'Run up to 3 searches if needed. Focus on linkedin.com/in profile pages.',
-    'Include every matching person you see on each search results page — do not skip profiles on a page.',
+    ...searchInstructions,
     '',
     'After searching, write a detailed profile list. For EACH person you MUST include:',
     '- name, job title, company, location (city/region/country)',
     '- the grey description/snippet text from the search result (the text under the blue title link) —',
     '  this is where locations like "Lahore, Punjab, Pakistan" and roles like "Founder & CEO" appear',
     '- the linkedin.com/in profile URL',
+    ...(recipe
+      ? [
+          '- fit evidence: the exact text proving they match the target (quote it verbatim),',
+          '  and which page it came from (their profile / their own post / a company page / other)',
+          '- past experience: previous roles or employers, only if the result text states them',
+        ]
+      : []),
     '',
     'Copy facts from search results only. Include the grey snippet text verbatim or closely paraphrased.',
     '',
@@ -56,7 +69,7 @@ export function prepareStructureItems(rawItems) {
   return { profiles, researchNotes, sparseDescriptions };
 }
 
-export function structureLeadsPrompt(rawItems, searchPrompt, maxResults = 10) {
+export function structureLeadsPrompt(rawItems, searchPrompt, maxResults = 10, structureContext = null) {
   const { profiles, researchNotes, sparseDescriptions } = prepareStructureItems(rawItems);
 
   const profileBlocks = profiles.map(
@@ -97,6 +110,7 @@ export function structureLeadsPrompt(rawItems, searchPrompt, maxResults = 10) {
     '',
     `# Search intent: "${searchPrompt}"`,
     '',
+    ...(structureContext ? [structureContext, ''] : []),
     ...sections,
     '',
     `# Task`,
@@ -110,15 +124,22 @@ export function structureLeadsPrompt(rawItems, searchPrompt, maxResults = 10) {
     '- link: linkedin.com/in URL copied exactly from results | null',
     '- snippet: 1 sentence summary',
     '- evidence: short quote from research_notes or description supporting title + company',
+    ...(structureContext
+      ? ['- past_experience, fit_evidence, fit_source, weak_fields: as defined in the avatar context above']
+      : []),
     '',
     '# Rules',
     '1. research_notes is the main source when per-result descriptions are missing.',
     '2. null only when a field truly does not appear anywhere in the results.',
     '3. link must appear verbatim in the results.',
     '4. Skip people who do not match the search intent.',
+    '5. If the search intent names a location, skip anyone whose result text places',
+    '   them elsewhere (wrong country/city). Do not invent a matching location.',
     '',
     'Return JSON array only. No markdown.',
-    '[{"name":"...","title":"...","company":"...","location":"...","link":null,"snippet":"...","evidence":"..."}]',
+    structureContext
+      ? '[{"name":"...","title":"...","company":"...","location":"...","link":null,"snippet":"...","evidence":"...","past_experience":null,"fit_evidence":"...","fit_source":"profile","weak_fields":[]}]'
+      : '[{"name":"...","title":"...","company":"...","location":"...","link":null,"snippet":"...","evidence":"..."}]',
   ].join('\n');
 }
 

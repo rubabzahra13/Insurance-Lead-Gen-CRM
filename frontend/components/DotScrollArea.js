@@ -4,10 +4,25 @@ import { useEffect, useRef, useState } from 'react';
 
 const DOT_COUNT = 3;
 
+function getScrollMetrics(el, axis) {
+  if (axis === 'vertical') {
+    return {
+      scrollable: el.scrollHeight - el.clientHeight,
+      position: el.scrollTop,
+    };
+  }
+  return {
+    scrollable: el.scrollWidth - el.clientWidth,
+    position: el.scrollLeft,
+  };
+}
+
 export default function DotScrollArea({
   children,
   className = '',
   axis = 'vertical',
+  /** When true, track the first textarea/[data-dot-scroll-target] inside the viewport. */
+  trackNestedScroll = false,
   ...props
 }) {
   const viewportRef = useRef(null);
@@ -15,14 +30,21 @@ export default function DotScrollArea({
   const [showRail, setShowRail] = useState(false);
 
   useEffect(() => {
-    const el = viewportRef.current;
-    if (!el) return;
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+
+    const resolveScrollEl = () => {
+      if (!trackNestedScroll) return viewport;
+      return (
+        viewport.querySelector('textarea, [data-dot-scroll-target]') || viewport
+      );
+    };
+
+    let scrollEl = resolveScrollEl();
 
     const update = () => {
-      const scrollable =
-        axis === 'vertical'
-          ? el.scrollHeight - el.clientHeight
-          : el.scrollWidth - el.clientWidth;
+      scrollEl = resolveScrollEl();
+      const { scrollable, position } = getScrollMetrics(scrollEl, axis);
 
       if (scrollable <= 2) {
         setShowRail(false);
@@ -30,22 +52,44 @@ export default function DotScrollArea({
       }
 
       setShowRail(true);
-      const position = axis === 'vertical' ? el.scrollTop : el.scrollLeft;
       setActiveDot(
         Math.min(DOT_COUNT - 1, Math.round((position / scrollable) * (DOT_COUNT - 1)))
       );
     };
 
-    el.addEventListener('scroll', update, { passive: true });
+    const bindScroll = (el) => {
+      el.addEventListener('scroll', update, { passive: true });
+      return () => el.removeEventListener('scroll', update);
+    };
+
+    let unbindScroll = bindScroll(scrollEl);
     const resizeObserver = new ResizeObserver(update);
-    resizeObserver.observe(el);
+    resizeObserver.observe(viewport);
+    resizeObserver.observe(scrollEl);
+
+    const mutationObserver = new MutationObserver(() => {
+      const next = resolveScrollEl();
+      if (next !== scrollEl) {
+        unbindScroll();
+        scrollEl = next;
+        unbindScroll = bindScroll(scrollEl);
+        resizeObserver.observe(scrollEl);
+      }
+      update();
+    });
+    mutationObserver.observe(viewport, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
     update();
 
     return () => {
-      el.removeEventListener('scroll', update);
+      unbindScroll();
       resizeObserver.disconnect();
+      mutationObserver.disconnect();
     };
-  }, [axis]);
+  }, [axis, trackNestedScroll]);
 
   return (
     <div className={`dot-scroll dot-scroll--${axis}${className ? ` ${className}` : ''}`}>

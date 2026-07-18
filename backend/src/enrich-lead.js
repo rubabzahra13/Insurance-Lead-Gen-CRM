@@ -4,6 +4,12 @@ import { normalizeProfileUrl } from './utils.js';
 const ROLE_RE =
   /\b(?:co-?founder(?:\s*&?\s*(?:ceo|cto))?|founder(?:\s*&?\s*(?:ceo|cto))?|ceo|cto|chief executive officer|chief technology officer)\b/i;
 
+// Words that mark a phrase as a job title rather than an employer name. A
+// LinkedIn headline is a role by default, so this is the guard that keeps roles
+// out of the Company field.
+const JOB_TITLE_RE =
+  /\b(aspiring|seeking|student|intern|graduate|advisor|adviser|consultant|planner|analyst|associate|assistant|representative|specialist|manager|director|officer|engineer|developer|designer|coordinator|supervisor|agent|broker|underwriter|adjuster|producer|recruiter|major|candidate|professional|entry.?level|junior|senior|trainee|apprentice)\b/i;
+
 const PLACE_RE =
   /\b(?:area|region|metropolitan|united states|united kingdom)\b|(?:,\s*[A-Za-z .'-]{2,30}){1,3}$/i;
 
@@ -81,9 +87,14 @@ export function parseHeadlineFields(headline) {
   const parts = cleaned.split(' - ').map((part) => part.trim()).filter(Boolean);
   if (parts.length === 2) {
     const second = parts[1];
-    if (!company && !ROLE_RE.test(second) && /[A-Za-z]/.test(second)) {
+    // A Google result title is "Name - Headline", and a headline is a ROLE. Only
+    // an explicit employer marker ("at", "@", ",") above makes it a company, so a
+    // job title here must not be promoted to one — that is how "Aspiring
+    // Financial Advisor" ended up in the CRM's Company column.
+    if (JOB_TITLE_RE.test(second)) {
+      title = title || second;
+    } else if (!company && !ROLE_RE.test(second) && /[A-Za-z]/.test(second)) {
       company = cleanCompany(second);
-      title = title || (ROLE_RE.test(second) ? second : null);
     }
     if (!title && ROLE_RE.test(second)) title = second.match(ROLE_RE)?.[0] ?? null;
   }

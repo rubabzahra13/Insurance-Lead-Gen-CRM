@@ -14,6 +14,7 @@ from app.routes.funnel_events import router as funnel_events_router
 from app.routes.scrape import router as scrape_router
 from app.routes.avatar12_leads import router as avatar12_router
 from app.routes.avatar3_leads import router as avatar3_router
+from app.routes.places import router as places_router
 
 
 import os
@@ -61,6 +62,31 @@ if frontend_url and frontend_url not in origins:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    import asyncio
+
+    async def _seed_funnel_test_lead() -> None:
+        try:
+            from app.session import SessionLocal
+            from app.services.avatar12_drafts import ensure_funnel_test_lead
+
+            def _run():
+                db = SessionLocal()
+                try:
+                    return ensure_funnel_test_lead(db=db)
+                finally:
+                    db.close()
+
+            seeded = await asyncio.to_thread(_run)
+            print(
+                f"Funnel test lead ready: {seeded['name']} "
+                f"<{seeded['contact_email']}> id={seeded['id']}"
+            )
+        except Exception as exc:
+            print(f"Funnel test lead seed skipped: {exc}")
+
+    # Do not block API readiness on DB seeding
+    asyncio.create_task(_seed_funnel_test_lead())
+
     yield
     from app.routes.scrape import shutdown_scrape_jobs
 
@@ -92,17 +118,18 @@ app.include_router(classify_search_router)
 app.include_router(dashboard_router)
 app.include_router(funnel_events_router)
 app.include_router(scrape_router)
+app.include_router(places_router)
 
 
 @app.get("/api/health")
 def health():
     settings = load_settings()
-    return {"ok": True, "claude_model": settings.claude_model}
+    return {"ok": True, "openai_model": settings.openai_model}
 
 
 def main() -> None:
     settings = load_settings()
-    print(f"Claude backend ready with model: {settings.claude_model}")
+    print(f"OpenAI backend ready with model: {settings.openai_model}")
 
 
 if __name__ == "__main__":

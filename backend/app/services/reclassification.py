@@ -80,14 +80,14 @@ def _build_graph(client_call):
                 requested_stage,
                 current_stage,
             )
-            fallback_reasoning = reasoning or "Claude returned an invalid stage, so the stage was left unchanged."
+            fallback_reasoning = reasoning or "The AI returned an invalid stage, so the stage was left unchanged."
             return {
                 "new_stage": current_stage,
                 "reasoning": f"{fallback_reasoning} Invalid stage ignored: {requested_stage}.",
             }
 
         if requested_stage == current_stage and not reasoning:
-            reasoning = "Claude kept the current stage unchanged."
+            reasoning = "The AI kept the current stage unchanged."
 
         return {"new_stage": requested_stage, "reasoning": reasoning}
 
@@ -142,5 +142,5 @@ def reclassify_note(
     new_stage = str(result.get("new_stage") or current_stage.value).strip()
     reasoning = str(result.get("reasoning") or "").strip()
     if not reasoning:
-        reasoning = "Claude kept the current stage unchanged."
+        reasoning = "The AI kept the current stage unchanged."
     return {"new_stage": new_stage, "reasoning": reasoning}

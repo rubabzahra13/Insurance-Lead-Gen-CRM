@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, Suspense } from 'react';
+import React, { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { LEAD_PATH } from '../../../lib/avatar-labels';
 import { COLORS, RGBA, BUSINESS_STAGES } from '../../../lib/colors';
@@ -10,6 +10,7 @@ import {
   avatar3SearchKey,
   fetchCachedJson,
   getApiCache,
+  invalidateApiCache,
   setApiCache,
 } from '../../../lib/api-cache';
 import { getApiBaseUrl } from '../../../lib/apiBaseUrl';
@@ -67,15 +68,19 @@ function BusinessWorkspaceContent() {
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState(false);
   const [newNoteContent, setNewNoteContent] = useState('');
-  const [noteAuthor, setNoteAuthor] = useState('Peter');
   const [noteSaving, setNoteSaving] = useState(false);
-  const [enriching, setEnriching] = useState(false);
 
   // Toast notification
   const [toast, setToast] = useState(null); // { message: string, type: 'success' | 'error' }
   const [workspaceSection, setWorkspaceSection] = useState(
     urlView === 'source' || urlQuery ? 'source' : urlView === 'table' ? 'table' : 'pipeline'
   );
+  const [deletingLeadId, setDeletingLeadId] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null); // { id, name } | null
+  const [dragOverStage, setDragOverStage] = useState(null);
+  const skipCardClickRef = useRef(false);
+  const pendingStagesRef = useRef(new Map());
+  const leadsFetchIdRef = useRef(0);
 
   const filteredLeads = useMemo(
     () => leads.filter((l) => !selectedQueryFilter || l.source_query === selectedQueryFilter),
@@ -108,11 +113,14 @@ function BusinessWorkspaceContent() {
     <div className="pipeline-board" role="region" aria-label="Pipeline board">
       {STAGES.map((stage) => {
         const stageLeads = filteredLeads.filter((l) => l.pipeline_stage === stage.id);
+        const isDropTarget = dragOverStage === stage.id;
         return (
           <section
             key={stage.id}
-            className="pipeline-list"
-            onDragOver={(e) => e.preventDefault()}
+            className={`pipeline-list${isDropTarget ? ' pipeline-list--drop-target' : ''}`}
+            onDragEnter={(e) => handleColumnDragEnter(e, stage.id)}
+            onDragOver={(e) => handleColumnDragOver(e, stage.id)}
+            onDragLeave={(e) => handleColumnDragLeave(e, stage.id)}
             onDrop={(e) => handleDrop(e, stage.id)}
             style={{ '--list-accent': stage.color }}
             aria-label={`${stage.label}, ${stageLeads.length} leads`}
@@ -124,7 +132,7 @@ function BusinessWorkspaceContent() {
 
             <div className="pipeline-list__cards">
               {stageLeads.length === 0 ? (
-                <p className="pipeline-list__empty">No leads in this stage</p>
+                <p className="pipeline-list__empty">Drop leads here</p>
               ) : (
                 stageLeads.map((lead) => (
                   <article
@@ -132,14 +140,15 @@ function BusinessWorkspaceContent() {
                     className={`pipeline-card${selectedLeadId === lead.id ? ' pipeline-card--active' : ''}`}
                     style={{ '--card-accent': stage.color }}
                     draggable
-                    onDragStart={(e) => {
-                      handleDragStart(e, lead.id, lead.pipeline_stage);
-                      e.currentTarget.style.opacity = '0.45';
+                    onDragStart={(e) => handleCardDragStart(e, lead.id, lead.pipeline_stage)}
+                    onDragEnd={handleCardDragEnd}
+                    onClick={() => {
+                      if (skipCardClickRef.current) {
+                        skipCardClickRef.current = false;
+                        return;
+                      }
+                      handleSelectLead(lead.id);
                     }}
-                    onDragEnd={(e) => {
-                      e.currentTarget.style.opacity = '';
-                    }}
-                    onClick={() => handleSelectLead(lead.id)}
                   >
                     <div className="pipeline-card__labels" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span className="pipeline-card__label" aria-hidden="true" />
@@ -177,8 +186,13 @@ function BusinessWorkspaceContent() {
                       {lead.has_image ? (
                         <img
                           src={`${apiBaseUrl}/api/avatar3/leads/${lead.id}/image`}
-                          alt={lead.business_name}
+                          alt=""
                           className="pipeline-card__image"
+                          draggable={false}
+                          onDragStart={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                          }}
                           onError={(e) => {
                             e.currentTarget.style.display = 'none';
                             const placeholder = e.currentTarget.nextElementSibling;
@@ -196,13 +210,30 @@ function BusinessWorkspaceContent() {
                     </div>
 
                     <div className="pipeline-card__body">
-                      <h4 className="pipeline-card__title">{lead.business_name}</h4>
+                      <div className="pipeline-card__title-row">
+                        <h4 className="pipeline-card__title">{lead.business_name}</h4>
+                        {lead.website && (
+                          <a
+                            href={lead.website}
+                            target="_blank"
+                            rel="noreferrer"
+                            draggable={false}
+                            onClick={(e) => e.stopPropagation()}
+                            onDragStart={(e) => e.preventDefault()}
+                            className="pipeline-card__badge pipeline-card__badge--link pipeline-card__title-link"
+                            aria-label="Open website"
+                            title="Open website"
+                          >
+                            <Globe size={12} />
+                          </a>
+                        )}
+                      </div>
                       {lead.source_query && (
                         <p className="pipeline-card__subtitle">{lead.source_query}</p>
                       )}
                     </div>
 
-                    {(lead.rating || lead.address || lead.website) && (
+                    {(lead.rating || lead.address) && (
                       <div className="pipeline-card__badges">
                         {lead.rating && (
                           <span className="pipeline-card__badge" title="Rating">
@@ -215,18 +246,6 @@ function BusinessWorkspaceContent() {
                             <MapPin size={12} />
                             <span className="pipeline-card__badge-text">{lead.address}</span>
                           </span>
-                        )}
-                        {lead.website && (
-                          <a
-                            href={lead.website}
-                            target="_blank"
-                            rel="noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="pipeline-card__badge pipeline-card__badge--link"
-                            aria-label="Open website"
-                          >
-                            <Globe size={12} />
-                          </a>
                         )}
                       </div>
                     )}
@@ -246,6 +265,23 @@ function BusinessWorkspaceContent() {
                           ))}
                         </select>
                       </label>
+                      <button
+                        type="button"
+                        className="pipeline-card__remove"
+                        disabled={deletingLeadId === lead.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          requestDeleteLead(lead.id, lead.business_name);
+                        }}
+                        aria-label={`Remove ${lead.business_name}`}
+                        title="Remove lead"
+                      >
+                        {deletingLeadId === lead.id ? (
+                          <Loader2 size={14} className="animate-spin" />
+                        ) : (
+                          <Trash2 size={14} />
+                        )}
+                      </button>
                     </footer>
                   </article>
                 ))
@@ -277,7 +313,7 @@ function BusinessWorkspaceContent() {
       <Sliders size={44} style={{ color: 'var(--text-muted)', opacity: 0.6 }} />
       <h4>Your pipeline is empty</h4>
       <p>Search Google Places to add your first business prospects.</p>
-      <button type="button" className="btn-primary" onClick={() => setWorkspaceSection('source')}>
+      <button type="button" className="btn-primary" onClick={() => { handleSelectLead(null); setWorkspaceSection('source'); }}>
         Find New Leads
       </button>
     </div>
@@ -290,11 +326,32 @@ function BusinessWorkspaceContent() {
   };
 
   // Fetch pipeline leads on mount
+  const syncLeadsCache = (nextLeads) => {
+    setApiCache(API_CACHE_KEYS.avatar3Leads, { items: nextLeads });
+  };
+
+  const mergePendingStages = (items) => {
+    const pending = pendingStagesRef.current;
+    if (!pending.size) return items || [];
+    return (items || []).map((lead) => {
+      const override = pending.get(String(lead.id));
+      if (!override || override === lead.pipeline_stage) return lead;
+      return { ...lead, pipeline_stage: override };
+    });
+  };
+
+  const applyPipelineLeads = (items) => {
+    const merged = mergePendingStages(items);
+    syncLeadsCache(merged);
+    setLeads(merged);
+    return merged;
+  };
+
   const fetchPipelineLeads = async ({ force = false } = {}) => {
     if (!force) {
       const cached = getApiCache(API_CACHE_KEYS.avatar3Leads);
       if (cached) {
-        setLeads(cached.items || []);
+        setLeads(mergePendingStages(cached.items || []));
         setLeadsLoading(false);
         void fetchPipelineLeads({ force: true });
         return;
@@ -302,22 +359,21 @@ function BusinessWorkspaceContent() {
     }
     if (!force) setLeadsLoading(true);
     setLeadsError(false);
+    const requestId = ++leadsFetchIdRef.current;
     try {
-      const { data } = await fetchCachedJson(`${apiBaseUrl}/api/avatar3/leads`, {
-        cacheKey: API_CACHE_KEYS.avatar3Leads,
-        force: true,
-      });
-      setLeads(data.items || []);
+      // Avoid fetchCachedJson here: it writes cache before we can discard a stale response
+      // that would clobber an optimistic stage move.
+      const res = await fetch(`${apiBaseUrl}/api/avatar3/leads`);
+      if (!res.ok) throw new Error(`Request failed (${res.status})`);
+      const data = await res.json();
+      if (requestId !== leadsFetchIdRef.current) return;
+      applyPipelineLeads(data.items || []);
     } catch (err) {
       console.error(err);
-      setLeadsError(true);
+      if (requestId === leadsFetchIdRef.current) setLeadsError(true);
     } finally {
-      setLeadsLoading(false);
+      if (requestId === leadsFetchIdRef.current) setLeadsLoading(false);
     }
-  };
-
-  const syncLeadsCache = (nextLeads) => {
-    setApiCache(API_CACHE_KEYS.avatar3Leads, { items: nextLeads });
   };
 
   const syncLeadDetailCache = (leadId, detail) => {
@@ -438,27 +494,47 @@ function BusinessWorkspaceContent() {
     router.push(`?${params.toString()}`);
   };
 
-  const handleEnrichFromWebsite = async () => {
-    if (!selectedLeadId || !leadDetails?.website) return;
-    setEnriching(true);
+  const requestDeleteLead = (leadId, businessName) => {
+    if (!leadId || deletingLeadId) return;
+    setDeleteConfirm({
+      id: leadId,
+      name: businessName || 'this lead',
+    });
+  };
+
+  const handleDeleteLead = async () => {
+    if (!deleteConfirm?.id || deletingLeadId) return;
+
+    const leadId = deleteConfirm.id;
+    const label = deleteConfirm.name;
+
+    setDeletingLeadId(leadId);
     try {
-      const res = await fetch(`${apiBaseUrl}/api/avatar3/leads/${selectedLeadId}/enrich`, { method: 'POST' });
+      const res = await fetch(`${apiBaseUrl}/api/avatar3/leads/${leadId}`, { method: 'DELETE' });
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
-        throw new Error(errBody.detail || 'Enrichment failed');
+        throw new Error(errBody.detail || 'Failed to remove lead');
       }
-      const data = await res.json();
-      setLeadDetails((prev) => {
-        const next = prev ? { ...prev, ...data } : data;
-        syncLeadDetailCache(selectedLeadId, next);
+
+      setLeads((prev) => {
+        const next = prev.filter((l) => l.id !== leadId);
+        syncLeadsCache(next);
         return next;
       });
-      showToast('Contact details enriched from website');
+      invalidateApiCache([avatar3LeadDetailKey(leadId)]);
+
+      if (selectedLeadId === leadId) {
+        handleSelectLead(null);
+        setLeadDetails(null);
+      }
+
+      setDeleteConfirm(null);
+      showToast(`Removed "${label}" from the pipeline.`);
     } catch (err) {
       console.error(err);
-      showToast(err.message || 'Could not enrich from website', 'error');
+      showToast(err.message || 'Failed to remove lead.', 'error');
     } finally {
-      setEnriching(false);
+      setDeletingLeadId(null);
     }
   };
 
@@ -531,23 +607,66 @@ function BusinessWorkspaceContent() {
   };
 
   // Native HTML5 Drag and Drop handlers
-  const handleDragStart = (e, leadId, fromStage) => {
-    e.dataTransfer.setData('text/plain', leadId);
-    e.dataTransfer.setData('fromStage', fromStage);
+  const isCardDragHandleTarget = (target) => {
+    if (!(target instanceof Element)) return true;
+    return !target.closest('a, button, select, input, textarea, label, .pipeline-card__footer');
   };
 
-  const handleStageUpdate = async (leadId, fromStage, toStage) => {
-    if (fromStage === toStage) return;
+  const handleCardDragStart = (e, leadId, fromStage) => {
+    if (!isCardDragHandleTarget(e.target)) {
+      e.preventDefault();
+      return;
+    }
 
-    // Optimistic UI updates
-    const previousLeads = [...leads];
-    setLeads(prev => {
-      const next = prev.map(l => {
-        if (l.id === leadId) {
-          return { ...l, pipeline_stage: toStage };
-        }
-        return l;
-      });
+    skipCardClickRef.current = true;
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', leadId);
+    e.dataTransfer.setData('fromStage', fromStage);
+    e.currentTarget.classList.add('pipeline-card--dragging');
+  };
+
+  const handleCardDragEnd = (e) => {
+    e.currentTarget.classList.remove('pipeline-card--dragging');
+    setDragOverStage(null);
+    // Keep skip flag until the synthetic click after drag, then clear leftover
+    window.setTimeout(() => {
+      skipCardClickRef.current = false;
+    }, 150);
+  };
+
+  const handleColumnDragEnter = (e, stageId) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes('text/plain')) {
+      setDragOverStage(stageId);
+    }
+  };
+
+  const handleColumnDragOver = (e, stageId) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (dragOverStage !== stageId) {
+      setDragOverStage(stageId);
+    }
+  };
+
+  const handleColumnDragLeave = (e, stageId) => {
+    const next = e.relatedTarget;
+    if (next instanceof Node && e.currentTarget.contains(next)) return;
+    setDragOverStage((current) => (current === stageId ? null : current));
+  };
+
+  const handleStageUpdate = async (leadId, fromStage, toStage, { silent = false } = {}) => {
+    if (!leadId || fromStage === toStage) return;
+    const leadKey = String(leadId);
+
+    // Invalidate in-flight list refreshes so they can't overwrite this move
+    leadsFetchIdRef.current += 1;
+    pendingStagesRef.current.set(leadKey, toStage);
+
+    setLeads((prev) => {
+      const next = prev.map((l) => (
+        String(l.id) === leadKey ? { ...l, pipeline_stage: toStage } : l
+      ));
       syncLeadsCache(next);
       return next;
     });
@@ -560,33 +679,51 @@ function BusinessWorkspaceContent() {
       });
 
       if (!patchRes.ok) throw new Error('Stage change was rejected by server');
-      
+
       const updatedLead = await patchRes.json();
-      
-      // Update in-memory list with backend response
-      setLeads(prev => {
-        const next = prev.map(l => (l.id === leadId ? updatedLead : l));
+      if (pendingStagesRef.current.get(leadKey) === toStage) {
+        pendingStagesRef.current.delete(leadKey);
+      }
+
+      setLeads((prev) => {
+        const next = prev.map((l) => {
+          if (String(l.id) !== leadKey) return l;
+          const override = pendingStagesRef.current.get(leadKey);
+          return override
+            ? { ...updatedLead, pipeline_stage: override }
+            : { ...l, ...updatedLead };
+        });
         syncLeadsCache(next);
         return next;
       });
-      
-      // If currently selected lead details are active, sync them
-      if (selectedLeadId === leadId) {
-        setLeadDetails(prev => {
+
+      if (selectedLeadId && String(selectedLeadId) === leadKey) {
+        setLeadDetails((prev) => {
           if (!prev) return null;
-          const next = { ...prev, pipeline_stage: toStage };
+          const override = pendingStagesRef.current.get(leadKey);
+          const next = {
+            ...prev,
+            ...updatedLead,
+            pipeline_stage: override || updatedLead.pipeline_stage || toStage,
+          };
           syncLeadDetailCache(leadId, next);
           return next;
         });
       }
 
-      showToast('Lead stage updated successfully.');
-
+      if (!silent) showToast('Lead stage updated successfully.');
     } catch (err) {
       console.error(err);
-      // Revert change
-      setLeads(previousLeads);
-      syncLeadsCache(previousLeads);
+      if (pendingStagesRef.current.get(leadKey) === toStage) {
+        pendingStagesRef.current.delete(leadKey);
+      }
+      setLeads((prev) => {
+        const next = prev.map((l) => (
+          String(l.id) === leadKey ? { ...l, pipeline_stage: fromStage } : l
+        ));
+        syncLeadsCache(next);
+        return next;
+      });
       showToast('Failed to update lead stage. Reverted changes.', 'error');
     }
   };
@@ -625,9 +762,12 @@ function BusinessWorkspaceContent() {
 
   const handleDrop = (e, toStage) => {
     e.preventDefault();
+    e.stopPropagation();
+    setDragOverStage(null);
     const leadId = e.dataTransfer.getData('text/plain');
     const fromStage = e.dataTransfer.getData('fromStage');
-    handleStageUpdate(leadId, fromStage, toStage);
+    skipCardClickRef.current = true;
+    handleStageUpdate(leadId, fromStage, toStage, { silent: true });
   };
 
   // Add Note — backend now returns full lead detail in one response (no extra GET needed)
@@ -641,7 +781,7 @@ function BusinessWorkspaceContent() {
       const res = await fetch(`${apiBaseUrl}/api/avatar3/leads/${selectedLeadId}/notes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: newNoteContent, author: noteAuthor })
+        body: JSON.stringify({ content: newNoteContent, author: 'Peter' })
       });
 
       if (!res.ok) throw new Error('Failed to save note');
@@ -695,6 +835,59 @@ function BusinessWorkspaceContent() {
         </div>
       )}
 
+      {deleteConfirm && (
+        <div
+          className="compose-confirm-backdrop"
+          role="presentation"
+          onClick={() => {
+            if (!deletingLeadId) setDeleteConfirm(null);
+          }}
+        >
+          <div
+            className="compose-confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-confirm-title"
+            aria-describedby="delete-confirm-desc"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="delete-confirm-title">Remove this lead?</h3>
+            <p id="delete-confirm-desc">
+              Remove &ldquo;{deleteConfirm.name}&rdquo; from the pipeline? This permanently deletes
+              the lead and its notes. This cannot be undone.
+            </p>
+            <div className="compose-confirm-modal__actions">
+              <button
+                type="button"
+                className="chip-fallback-btn"
+                disabled={Boolean(deletingLeadId)}
+                onClick={() => setDeleteConfirm(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-primary compose-confirm-modal__danger"
+                disabled={Boolean(deletingLeadId)}
+                onClick={handleDeleteLead}
+              >
+                {deletingLeadId ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" />
+                    Removing…
+                  </>
+                ) : (
+                  <>
+                    <Trash2 size={14} />
+                    Yes, remove
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <header className="individual-page-header">
         <nav className="individual-workspace-nav" aria-label="Business leads workflow">
           {BUSINESS_WORKSPACE_SECTIONS.map((section) => {
@@ -705,7 +898,12 @@ function BusinessWorkspaceContent() {
                 key={section.id}
                 type="button"
                 className={`individual-workspace-nav__tab${isActive ? ' individual-workspace-nav__tab--active' : ''}`}
-                onClick={() => setWorkspaceSection(section.id)}
+                onClick={() => {
+                  if (section.id === 'source' && selectedLeadId) {
+                    handleSelectLead(null);
+                  }
+                  setWorkspaceSection(section.id);
+                }}
               >
                 <SectionIcon size={16} />
                 <span>{section.label}</span>
@@ -783,6 +981,7 @@ function BusinessWorkspaceContent() {
                       onClick={() => {
                         setSearchQuery(hint);
                         setSearchValidationError('');
+                        executeSearch(hint);
                       }}
                     >
                       {hint}
@@ -905,7 +1104,7 @@ function BusinessWorkspaceContent() {
               {filteredLeads.length === 0 ? (
                 <div className="business-tab-state">
                   <p>No leads match this filter.</p>
-                  <button type="button" className="btn-primary" onClick={() => setWorkspaceSection('source')}>
+                  <button type="button" className="btn-primary" onClick={() => { handleSelectLead(null); setWorkspaceSection('source'); }}>
                     Find New Leads
                   </button>
                 </div>
@@ -998,8 +1197,8 @@ function BusinessWorkspaceContent() {
           )}
       </div>
 
-      {/* Detail Slide-over Panel (Step 3.7) */}
-      {selectedLeadId && (
+      {/* Detail Slide-over Panel (Step 3.7) — only over pipeline/table so Find New Leads stays usable */}
+      {selectedLeadId && workspaceSection !== 'source' && (
         <>
         {/* Backdrop overlay */}
         <div
@@ -1040,9 +1239,25 @@ function BusinessWorkspaceContent() {
                           </span>
                         </div>
                       </div>
-                      <button onClick={() => handleSelectLead(null)} style={{ background: COLORS.white, border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-secondary)', padding: '6px', cursor: 'pointer', flexShrink: 0 }}>
-                        <X size={16} />
-                      </button>
+                      <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+                        <button
+                          type="button"
+                          className="pipeline-card__remove pipeline-card__remove--drawer"
+                          disabled={deletingLeadId === leadDetails.id}
+                          onClick={() => requestDeleteLead(leadDetails.id, leadDetails.business_name)}
+                          title="Remove lead"
+                          aria-label={`Remove ${leadDetails.business_name}`}
+                        >
+                          {deletingLeadId === leadDetails.id ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <Trash2 size={14} />
+                          )}
+                        </button>
+                        <button onClick={() => handleSelectLead(null)} style={{ background: COLORS.white, border: '1px solid var(--border-color)', borderRadius: '6px', color: 'var(--text-secondary)', padding: '6px', cursor: 'pointer', flexShrink: 0 }}>
+                          <X size={16} />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -1059,7 +1274,7 @@ function BusinessWorkspaceContent() {
                   </h4>
                   
                   {/* Prominent Business Info (Places Data) */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '12px', paddingBottom: '16px', borderBottom: '1px solid var(--border-color)', marginBottom: '16px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '12px' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                       <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>Business Name</span>
                       <span style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-primary)' }}>{leadDetails.business_name}</span>
@@ -1111,69 +1326,6 @@ function BusinessWorkspaceContent() {
                     </div>
                   </div>
 
-                  {/* Secondary Enrichment Contact Details */}
-                  <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                      <h5 style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-secondary)', margin: 0 }}>
-                        Contact Details
-                      </h5>
-                      {leadDetails.website && (
-                        <button
-                          type="button"
-                          onClick={handleEnrichFromWebsite}
-                          disabled={enriching}
-                          className="btn-primary"
-                          style={{ padding: '4px 10px', fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '4px' }}
-                        >
-                          {enriching ? <Loader2 size={12} className="spin" /> : <Sparkles size={12} />}
-                          {enriching ? 'Enriching…' : 'Enrich Website'}
-                        </button>
-                      )}
-                    </div>
-
-                    {(() => {
-                      const hasEnrichmentData = !!(leadDetails.owner_name || leadDetails.manager_name || leadDetails.contact_email || leadDetails.contact_linkedin);
-                      
-                      if (!hasEnrichmentData) {
-                        return (
-                          <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontStyle: 'italic', padding: '4px 0' }}>
-                            No additional contact details found.
-                          </div>
-                        );
-                      }
-
-                      return (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.8rem' }}>
-                          {leadDetails.owner_name && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span style={{ color: 'var(--text-muted)' }}>Owner:</span>
-                              <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{leadDetails.owner_name}</span>
-                            </div>
-                          )}
-                          {leadDetails.manager_name && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span style={{ color: 'var(--text-muted)' }}>Manager:</span>
-                              <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{leadDetails.manager_name}</span>
-                            </div>
-                          )}
-                          {leadDetails.contact_email && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span style={{ color: 'var(--text-muted)' }}>Email:</span>
-                              <a href={`mailto:${leadDetails.contact_email}`} style={{ color: COLORS.oldRose, fontWeight: 500 }}>{leadDetails.contact_email}</a>
-                            </div>
-                          )}
-                          {leadDetails.contact_linkedin && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <span style={{ color: 'var(--text-muted)' }}>LinkedIn:</span>
-                              <a href={leadDetails.contact_linkedin} target="_blank" rel="noreferrer" style={{ color: COLORS.oldRose, display: 'flex', alignItems: 'center', gap: '3px', fontWeight: 500 }}>
-                                View Profile <ArrowRight size={10} />
-                              </a>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </div>
                 </div>
 
                 {/* AI Follow-Up Plans (Step 3.7 planning agent output) */}
@@ -1318,22 +1470,7 @@ function BusinessWorkspaceContent() {
                       resize: 'vertical'
                     }}
                   />
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <input 
-                      type="text" 
-                      placeholder="Author" 
-                      value={noteAuthor} 
-                      onChange={(e) => setNoteAuthor(e.target.value)}
-                      style={{
-                        background: 'transparent',
-                        border: 'none',
-                        borderBottom: '1px solid var(--border-color)',
-                        color: 'var(--text-secondary)',
-                        fontSize: '0.75rem',
-                        outline: 'none',
-                        width: '100px'
-                      }}
-                    />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
                     <button
                       type="submit"
                       className="btn-primary"

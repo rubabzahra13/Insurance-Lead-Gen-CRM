@@ -88,7 +88,8 @@ export function scoreLeadConfidence(lead, context = {}) {
   }
 
   if (context.suspiciousSlug) {
-    score -= 0.25;
+    // LinkedIn often appends numbers to real profile slugs — only nudge, don't kill.
+    score -= 0.05;
     reasons.push('suspicious_slug_pattern');
   }
 

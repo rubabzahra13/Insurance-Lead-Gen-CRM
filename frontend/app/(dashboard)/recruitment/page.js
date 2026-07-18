@@ -1,9 +1,8 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, Suspense } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, Suspense } from 'react';
 import { individualShortLabel } from '../../../lib/avatar-labels';
 import { LEAD_SEGMENTS, useIndividualSegment } from '../../../context/IndividualSegmentContext';
-import { BRAND } from '../../../lib/brand';
 import { COLORS, GRADIENT, RGBA } from '../../../lib/colors';
 import IndividualSearchPanel from '../../../components/IndividualSearchPanel';
 import DotScrollArea from '../../../components/DotScrollArea';
@@ -17,10 +16,11 @@ import {
 } from '../../../lib/api-cache';
 import { getApiBaseUrl } from '../../../lib/apiBaseUrl';
 import { 
-  Send, Sparkles, AlertCircle, Search, MapPin, 
+  Sparkles, AlertCircle, Search, MapPin, 
   Briefcase, Filter, X, RotateCcw, AlertTriangle, 
   CheckCircle2, ArrowUpRight, User, FileText, ChevronRight, Loader2,
-  Clock, Activity, MessageSquare, TrendingUp, ArrowUpDown
+  Clock, Activity, MessageSquare, TrendingUp, ArrowUpDown, Copy, Check,
+  Pencil, Building2, ExternalLink
 } from 'lucide-react';
 
 const SORT_OPTIONS = [
@@ -32,13 +32,154 @@ const SORT_OPTIONS = [
   { value: 'status', label: 'Outreach status' },
 ];
 
+/** Hardcoded Job Seeker draft for manual intake-funnel QA (matches DB seed). */
+const FUNNEL_TEST_LEAD_ID = 'f11e1000-0000-4000-8000-000000000001';
+const FUNNEL_TEST_EMAIL = 'rubabzahra248@gmail.com';
+const FUNNEL_TEST_LEAD = {
+  id: FUNNEL_TEST_LEAD_ID,
+  avatar_type: 'avatar1',
+  name: 'Rubab Zahra',
+  headline: 'Funnel Test, Insurance Sales Professional',
+  role: 'Insurance Sales Representative',
+  company: 'InsureLead Demo',
+  past_experience: 'Hardcoded test lead for intake funnel verification.',
+  location: 'Islamabad, Pakistan',
+  linkedin_url: null,
+  contact_email: FUNNEL_TEST_EMAIL,
+  contact_phone: null,
+  search_prompt: 'funnel test lead',
+  source_query: 'funnel test lead',
+  draft_count: 1,
+  latest_draft: {
+    id: 'funnel-test-draft',
+    avatar12_lead_id: FUNNEL_TEST_LEAD_ID,
+    status: 'draft',
+    message: '',
+    reasoning: 'Hardcoded funnel test fixture.',
+    created_at: new Date().toISOString(),
+  },
+};
+
+function withFunnelTestLead(items) {
+  const list = Array.isArray(items) ? [...items] : [];
+  const idx = list.findIndex((lead) => String(lead.id) === FUNNEL_TEST_LEAD_ID);
+  if (idx >= 0) {
+    const [existing] = list.splice(idx, 1);
+    return [{
+      ...FUNNEL_TEST_LEAD,
+      ...existing,
+      contact_email: existing.contact_email || FUNNEL_TEST_EMAIL,
+    }, ...list];
+  }
+  return [FUNNEL_TEST_LEAD, ...list];
+}
+
+/**
+ * Identity for matching a lead the pipeline just returned against a row in the
+ * drafts list. The LinkedIn URL is the reliable key; fall back to the name so a
+ * profile without a link still matches.
+ */
+function leadIdentityKey(lead) {
+  const url = lead?.linkedin_url || lead?.link || '';
+  const slug = String(url).match(/\/in\/([^/?#]+)/i)?.[1];
+  if (slug) return `in:${slug.toLowerCase()}`;
+  const name = String(lead?.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  return name ? `name:${name}` : null;
+}
+
+function draftStatusLabel(status) {
+  if (status === 'sent') return 'Sent';
+  if (status === 'failed') return 'Failed';
+  return 'Draft';
+}
+
 function stripEmDashes(text) {
   if (!text) return '';
   return text.replace(/\s*[\u2014\u2013]\s*/g, ', ').trim();
 }
 
+function displayField(value, label = 'details') {
+  const text = String(value || '').trim();
+  return text || `Add ${label}`;
+}
+
+function isMissingField(value) {
+  return !String(value || '').trim();
+}
+
 function formatLeadInsight(text) {
   return stripEmDashes(text);
+}
+
+function parseFunnelPayload(raw) {
+  if (!raw) return null;
+  if (typeof raw === 'object') return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function formatFunnelTimestamp(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function buildIndividualFunnelSteps(leadDetails) {
+  const events = leadDetails?.funnel_events || [];
+  const latestByType = {};
+  for (const event of events) {
+    const type = event?.event_type;
+    if (!type) continue;
+    const prev = latestByType[type];
+    if (!prev || new Date(event.created_at) > new Date(prev.created_at)) {
+      latestByType[type] = event;
+    }
+  }
+
+  const meetingPayload = parseFunnelPayload(latestByType.meeting_booked?.payload);
+  const meetingDesc = meetingPayload?.date
+    ? `Booked for ${meetingPayload.date}${meetingPayload.time ? ` at ${meetingPayload.time}` : ''}.`
+    : 'Calendar booking completed on the intake page.';
+
+  return [
+    {
+      id: 'link_clicked',
+      label: 'Link Clicked',
+      desc: 'Lead opened the custom landing page link.',
+      completed: Boolean(latestByType.link_clicked),
+      at: latestByType.link_clicked?.created_at || null,
+    },
+    {
+      id: 'form_started',
+      label: 'Intake Form Started',
+      desc: 'Lead began filling out intake questions.',
+      completed: Boolean(latestByType.form_started),
+      at: latestByType.form_started?.created_at || null,
+    },
+    {
+      id: 'form_submitted',
+      label: 'Form Submitted',
+      desc: 'Lead submitted contact and experience details.',
+      completed: Boolean(latestByType.form_submitted),
+      at: latestByType.form_submitted?.created_at || null,
+    },
+    {
+      id: 'meeting_booked',
+      label: 'Meeting Scheduled',
+      desc: meetingDesc,
+      completed: Boolean(latestByType.meeting_booked),
+      at: latestByType.meeting_booked?.created_at || null,
+    },
+  ];
 }
 
 function RecruitmentWorkspaceContent() {
@@ -49,8 +190,8 @@ function RecruitmentWorkspaceContent() {
   const selectedLeadId = searchParams.get('leadId');
   const urlQuery = searchParams.get('q') || '';
 
-  // Leads state
-  const [leads, setLeads] = useState([]);
+  // Leads state — show funnel test fixture immediately so the list never hangs blank
+  const [leads, setLeads] = useState(() => withFunnelTestLead([]));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
@@ -70,6 +211,13 @@ function RecruitmentWorkspaceContent() {
   ); // source | leads | analytics
   const [listFiltersOpen, setListFiltersOpen] = useState(false);
 
+  // The leads the most recent search returned, as { query, keys:Set, count }.
+  // Needed because a person we already had is UPDATED rather than inserted, so
+  // "Newest first" (created_at) hides them — they were the reason a search could
+  // look like it did nothing.
+  const [searchRun, setSearchRun] = useState(null);
+  const [onlyThisSearch, setOnlyThisSearch] = useState(false);
+
   // Right pane details state
   const [activeTab, setActiveTab] = useState('profile'); // profile | compose | history | funnel
   const [selectedLeadDetails, setSelectedLeadDetails] = useState(null);
@@ -78,12 +226,14 @@ function RecruitmentWorkspaceContent() {
   const [rightLoading, setRightLoading] = useState(false);
   const [rightError, setRightError] = useState(false);
   const [noDraftExists, setNoDraftExists] = useState(false);
-  const [sendChannel, setSendChannel] = useState('email'); // 'email' | 'sms' | 'both'
-  const [contactEmail, setContactEmail] = useState('');
-  const [contactPhone, setContactPhone] = useState('');
-  const [emailError, setEmailError] = useState('');
-  const [phoneError, setPhoneError] = useState('');
+  const [draftCopied, setDraftCopied] = useState(false);
+  const [markingSent, setMarkingSent] = useState(false);
+  const [confirmMarkSentOpen, setConfirmMarkSentOpen] = useState(false);
   const [toast, setToast] = useState(null); // { message: string, type: 'success' | 'error' }
+  const [editingLead, setEditingLead] = useState(false);
+  const [editForm, setEditForm] = useState(null);
+  const [savingLead, setSavingLead] = useState(false);
+  const openEditAfterLoadRef = useRef(false);
 
   // Show Toast Helper
   const showToast = (message, type = 'success') => {
@@ -104,25 +254,36 @@ function RecruitmentWorkspaceContent() {
       const cached = getApiCache(API_CACHE_KEYS.avatar12Leads);
       if (cached) {
         const items = Array.isArray(cached) ? cached : (cached.items || []);
-        setLeads(items);
+        setLeads(withFunnelTestLead(items));
         setLoading(false);
         void fetchLeads({ force: true });
         return;
       }
     }
+
+    // Keep existing rows visible during background refresh
     if (!force) setLoading(true);
     setError(false);
     try {
       const apiBaseUrl = getApiBaseUrl();
-      const { data } = await fetchCachedJson(`${apiBaseUrl}/api/avatar12/leads`, {
-        cacheKey: API_CACHE_KEYS.avatar12Leads,
-        force: true,
-      });
-      const items = Array.isArray(data) ? data : (data.items || []);
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 15000);
+      let data;
+      try {
+        const res = await fetch(`${apiBaseUrl}/api/avatar12/leads`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`Request failed (${res.status})`);
+        data = await res.json();
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
+      const items = withFunnelTestLead(Array.isArray(data) ? data : (data.items || []));
       setLeads(items);
+      setApiCache(API_CACHE_KEYS.avatar12Leads, { items });
     } catch (err) {
       console.error(err);
-      setError(true);
+      setLeads((prev) => withFunnelTestLead(prev));
     } finally {
       setLoading(false);
     }
@@ -181,6 +342,9 @@ function RecruitmentWorkspaceContent() {
       setDraftMessage('');
       setDraftReasoning('');
       setNoDraftExists(false);
+      setEditingLead(false);
+      setEditForm(null);
+      openEditAfterLoadRef.current = false;
       return;
     }
 
@@ -189,19 +353,30 @@ function RecruitmentWorkspaceContent() {
       setRightError(false);
       setNoDraftExists(false);
       setActiveTab('profile');
-      setEmailError('');
-      setPhoneError('');
+      setDraftCopied(false);
+      setEditingLead(false);
+      setEditForm(null);
 
       try {
-        const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
+        const apiBaseUrl = getApiBaseUrl();
         
         // 1. Fetch Lead Details
         const leadRes = await fetch(`${apiBaseUrl}/api/avatar12/leads/${selectedLeadId}`);
         if (!leadRes.ok) throw new Error('Failed to fetch lead details');
         const leadData = await leadRes.json();
         setSelectedLeadDetails(leadData);
-        setContactEmail(leadData.contact_email || '');
-        setContactPhone(leadData.contact_phone || '');
+        if (openEditAfterLoadRef.current) {
+          openEditAfterLoadRef.current = false;
+          setEditForm({
+            name: leadData.name || '',
+            headline: leadData.headline || '',
+            role: leadData.role || '',
+            company: leadData.company || '',
+            location: leadData.location || '',
+            linkedin_url: leadData.linkedin_url || '',
+          });
+          setEditingLead(true);
+        }
 
         // 2. Fetch Latest Draft
         const draftRes = await fetch(`${apiBaseUrl}/api/avatar12/leads/${selectedLeadId}/drafts/latest`);
@@ -244,8 +419,91 @@ function RecruitmentWorkspaceContent() {
     }
   }, [activeTab, selectedLeadDetails]);
 
+  // Refresh funnel events when opening the Funnel tab
+  useEffect(() => {
+    if (activeTab !== 'funnel' || !selectedLeadId) return;
+    let cancelled = false;
+
+    const refreshFunnelEvents = async () => {
+      try {
+        const apiBaseUrl = getApiBaseUrl();
+        const res = await fetch(`${apiBaseUrl}/api/avatar12/leads/${selectedLeadId}`);
+        if (!res.ok || cancelled) return;
+        const leadData = await res.json();
+        if (cancelled) return;
+        setSelectedLeadDetails((prev) => (prev ? { ...prev, ...leadData } : leadData));
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    refreshFunnelEvents();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, selectedLeadId]);
+
+  const startEditingLead = (lead = selectedLeadDetails) => {
+    if (!lead) return;
+    setActiveTab('profile');
+    setEditForm({
+      name: lead.name || '',
+      headline: lead.headline || '',
+      role: lead.role || '',
+      company: lead.company || '',
+      location: lead.location || '',
+      linkedin_url: lead.linkedin_url || '',
+    });
+    setEditingLead(true);
+  };
+
+  const cancelEditingLead = () => {
+    setEditingLead(false);
+    setEditForm(null);
+  };
+
+  const saveLeadEdits = async () => {
+    if (!selectedLeadId || !editForm) return;
+    setSavingLead(true);
+    try {
+      const apiBaseUrl = getApiBaseUrl();
+      const res = await fetch(`${apiBaseUrl}/api/avatar12/leads/${selectedLeadId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editForm),
+      });
+      if (!res.ok) throw new Error(`Save failed (${res.status})`);
+      const updated = await res.json();
+      setSelectedLeadDetails((prev) => (prev ? { ...prev, ...updated } : updated));
+      setLeads((prev) =>
+        prev.map((lead) => (lead.id === selectedLeadId ? { ...lead, ...updated } : lead)),
+      );
+      invalidateApiCache([API_CACHE_KEYS.avatar12Leads]);
+      setEditingLead(false);
+      setEditForm(null);
+      showToast('Lead updated');
+    } catch (err) {
+      console.error(err);
+      showToast('Could not save lead changes', 'error');
+    } finally {
+      setSavingLead(false);
+    }
+  };
+
   // Update URL search parameters when selecting a lead
-  const handleSelectLead = (leadId) => {
+  const handleSelectLead = (leadId, { edit = false } = {}) => {
+    if (edit) openEditAfterLoadRef.current = true;
+    else if (!leadId) {
+      setEditingLead(false);
+      setEditForm(null);
+      openEditAfterLoadRef.current = false;
+    }
+
+    if (edit && leadId && leadId === selectedLeadId && selectedLeadDetails) {
+      startEditingLead(selectedLeadDetails);
+      return;
+    }
+
     const params = new URLSearchParams(searchParams.toString());
     if (leadId) {
       params.set('leadId', leadId);
@@ -297,73 +555,74 @@ function RecruitmentWorkspaceContent() {
     router.push(`?${params.toString()}`);
   };
 
-  // Dispatch message sender via mailto or sms URI schemes, and update backend status
-  const handleSendVia = async (channel) => {
-    if (!selectedLeadId) return;
+  const handleCopyDraft = async () => {
+    const text = draftMessage || '';
+    if (!text.trim()) {
+      showToast('Nothing to copy yet.', 'error');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setDraftCopied(true);
+      showToast('Draft copied.');
+      window.setTimeout(() => setDraftCopied(false), 2000);
+    } catch (err) {
+      console.error(err);
+      showToast('Could not copy draft.', 'error');
+    }
+  };
 
-    if (channel === 'email') {
-      if (!contactEmail || !contactEmail.trim()) {
-        setEmailError('Please enter an email address.');
-        return;
-      }
-      setEmailError('');
-      
-      const firstName = selectedLeadDetails?.name ? selectedLeadDetails.name.split(' ')[0] : 'you';
-      const subject = `Opportunity for ${firstName}`;
-      // RFC 2368: mailto body newlines must be CRLF (\r\n) which URL-encodes to %0D%0A
-      const formattedBody = draftMessage.replace(/\r?\n/g, '\r\n');
-      const mailtoLink = `mailto:${encodeURIComponent(contactEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(formattedBody)}`;
-      console.log("Constructed mailto link:", mailtoLink);
-      
-      // Trigger navigation to open default email handler
-      window.location.href = mailtoLink;
-    } else if (channel === 'sms') {
-      if (!contactPhone || !contactPhone.trim()) {
-        setPhoneError('Please enter a phone number.');
-        return;
-      }
-      setPhoneError('');
-      
-      // Note: exact query param syntax for the body varies slightly by OS/handler — implement the commonly-supported form
-      const smsLink = `sms:${encodeURIComponent(contactPhone)}?&body=${encodeURIComponent(draftMessage)}`;
-      console.log("Constructed sms link:", smsLink);
-      
-      // Trigger navigation to open default SMS handler
-      window.location.href = smsLink;
+  const requestMarkAsSent = () => {
+    if (!selectedLeadId) return;
+    if (!draftMessage.trim()) {
+      showToast('Add a draft message before marking as sent.', 'error');
+      return;
+    }
+    setConfirmMarkSentOpen(true);
+  };
+
+  const handleMarkAsSent = async () => {
+    if (!selectedLeadId) return;
+    if (!draftMessage.trim()) {
+      showToast('Add a draft message before marking as sent.', 'error');
+      return;
     }
 
+    setMarkingSent(true);
     try {
-      const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
+      const apiBaseUrl = getApiBaseUrl();
       const sendRes = await fetch(`${apiBaseUrl}/api/avatar12/leads/${selectedLeadId}/messages/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          channels: [channel],
+        body: JSON.stringify({
+          mark_only: true,
           message: draftMessage,
-          to_email: contactEmail || undefined,
-          to_phone: contactPhone || undefined,
-        })
+        }),
       });
 
       if (!sendRes.ok) {
         const errBody = await sendRes.json().catch(() => ({}));
-        throw new Error(errBody.detail || 'Failed to dispatch outreach message.');
+        throw new Error(errBody.detail || 'Failed to mark draft as sent.');
       }
 
-      const resData = await sendRes.json();
-      showToast(channel === 'email' ? 'Email draft opened!' : 'SMS draft opened!');
-      
-      // Update local leads list status in-memory for instant feedback
-      setLeads(prev => {
-        const next = prev.map(l => {
+      const sendResult = await sendRes.json();
+      const markedAt = sendResult?.draft?.sent_at || new Date().toISOString();
+      const markedDraft = sendResult?.draft;
+      setConfirmMarkSentOpen(false);
+      showToast('Marked as sent.');
+
+      setLeads((prev) => {
+        const next = prev.map((l) => {
           if (l.id === selectedLeadId) {
             return {
               ...l,
               latest_draft: {
                 ...(l.latest_draft || {}),
+                ...(markedDraft || {}),
                 status: 'sent',
-                message: draftMessage
-              }
+                message: draftMessage,
+                sent_at: markedAt,
+              },
             };
           }
           return l;
@@ -372,36 +631,56 @@ function RecruitmentWorkspaceContent() {
         return next;
       });
 
-      // Update selected lead details in-memory
-      setSelectedLeadDetails(prev => {
+      setSelectedLeadDetails((prev) => {
         if (!prev) return null;
         const updatedDrafts = prev.drafts ? [...prev.drafts] : [];
         if (updatedDrafts.length > 0) {
-          updatedDrafts[updatedDrafts.length - 1].status = 'sent';
-          updatedDrafts[updatedDrafts.length - 1].message = draftMessage;
-        } else {
-          updatedDrafts.push({
-            id: 'new',
+          const last = {
+            ...updatedDrafts[updatedDrafts.length - 1],
+            ...(markedDraft || {}),
             status: 'sent',
             message: draftMessage,
-            reasoning: 'Draft created from scratch.',
-            created_at: new Date().toISOString()
+            sent_at: markedAt,
+          };
+          updatedDrafts[updatedDrafts.length - 1] = last;
+        } else {
+          updatedDrafts.push({
+            id: markedDraft?.id || 'new',
+            status: 'sent',
+            message: draftMessage,
+            reasoning: markedDraft?.reasoning || 'Draft created from scratch.',
+            created_at: markedDraft?.created_at || new Date().toISOString(),
+            sent_at: markedAt,
           });
         }
         return {
           ...prev,
-          drafts: updatedDrafts
+          drafts: updatedDrafts,
         };
       });
 
-      // Reload funnel aggregates to reflect dispatch update
       fetchFunnelData();
-
     } catch (err) {
       console.error(err);
-      showToast(err.message || 'Failed to dispatch message.', 'error');
+      showToast(err.message || 'Failed to mark draft as sent.', 'error');
+    } finally {
+      setMarkingSent(false);
     }
   };
+
+  // A run belongs to one segment, so keep the filter from blanking the other tab.
+  useEffect(() => {
+    setOnlyThisSearch(false);
+  }, [leadSegment]);
+
+  const isFromSearchRun = useCallback(
+    (lead) => {
+      if (!searchRun?.keys?.size) return false;
+      const key = leadIdentityKey(lead);
+      return Boolean(key && searchRun.keys.has(key));
+    },
+    [searchRun],
+  );
 
   // Filtering and sorting leads on client-side
   const filteredLeads = useMemo(() => {
@@ -427,6 +706,10 @@ function RecruitmentWorkspaceContent() {
         return false;
       }
 
+      if (onlyThisSearch && !isFromSearchRun(lead)) {
+        return false;
+      }
+
       return true;
     });
 
@@ -434,6 +717,13 @@ function RecruitmentWorkspaceContent() {
     const sorted = [...filtered];
 
     sorted.sort((a, b) => {
+      // Anything the latest search returned floats to the top, whether it was a
+      // brand new row or an existing lead this search re-found. Without this a
+      // re-found lead keeps its old created_at and sinks out of sight.
+      const aRun = isFromSearchRun(a) ? 1 : 0;
+      const bRun = isFromSearchRun(b) ? 1 : 0;
+      if (aRun !== bRun) return bRun - aRun;
+
       switch (sortBy) {
         case 'oldest':
           return new Date(a.created_at || 0) - new Date(b.created_at || 0);
@@ -455,7 +745,7 @@ function RecruitmentWorkspaceContent() {
     });
 
     return sorted;
-  }, [leads, textSearch, leadSegment, statusFilter, sortBy]);
+  }, [leads, textSearch, leadSegment, statusFilter, sortBy, onlyThisSearch, isFromSearchRun]);
 
   // Calculate aggregate funnel metrics for the active segment
   const aggregateItems = funnelData.items.filter((item) => item.avatar_type === leadSegment);
@@ -477,13 +767,13 @@ function RecruitmentWorkspaceContent() {
 
   const workspaceSections = [
     { id: 'source', label: 'Find New Leads', icon: Search, desc: 'Search for and source fresh individual prospects' },
-    { id: 'leads', label: 'Outreach Drafts', icon: FileText, desc: 'Review, edit, and send personalized outreach drafts' },
-    { id: 'analytics', label: 'Track Sent', icon: TrendingUp, desc: 'Monitor how sent drafts perform after delivery' },
+    { id: 'leads', label: 'Outreach Drafts', icon: FileText, desc: 'Review drafts, copy them, and mark as sent' },
+    { id: 'analytics', label: 'Track Sent', icon: TrendingUp, desc: 'Monitor how sent outreach performs after delivery' },
   ];
 
   const leadDetailTabs = [
     { id: 'profile', label: 'Profile', icon: User },
-    { id: 'compose', label: 'Compose', icon: MessageSquare },
+    { id: 'compose', label: 'Get draft', icon: MessageSquare },
     { id: 'history', label: 'Sent Review', icon: Clock, sentOnly: true },
     { id: 'funnel', label: 'Funnel', icon: Activity },
   ];
@@ -621,6 +911,59 @@ function RecruitmentWorkspaceContent() {
         </div>
       )}
 
+      {confirmMarkSentOpen && (
+        <div
+          className="compose-confirm-backdrop"
+          role="presentation"
+          onClick={() => {
+            if (!markingSent) setConfirmMarkSentOpen(false);
+          }}
+        >
+          <div
+            className="compose-confirm-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="compose-confirm-title"
+            aria-describedby="compose-confirm-desc"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="compose-confirm-title">Did you send this outreach?</h3>
+            <p id="compose-confirm-desc">
+              Only continue if you&apos;ve already delivered this draft to the lead.
+              Then mark it as sent.
+            </p>
+            <div className="compose-confirm-modal__actions">
+              <button
+                type="button"
+                className="chip-fallback-btn"
+                disabled={markingSent}
+                onClick={() => setConfirmMarkSentOpen(false)}
+              >
+                Not yet
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={markingSent}
+                onClick={handleMarkAsSent}
+              >
+                {markingSent ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" />
+                    Saving…
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 size={14} />
+                    Yes, mark as sent
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <header className="individual-page-header">
         <nav className="individual-workspace-nav" aria-label="Individual outreach workflow">
           {workspaceSections.map((section) => {
@@ -645,7 +988,15 @@ function RecruitmentWorkspaceContent() {
         <div className="individual-section individual-section--source">
           <IndividualSearchPanel
             activeSegment={leadSegment}
-            onComplete={() => {
+            onComplete={(run) => {
+              const keys = new Set(
+                (run?.leads || []).map(leadIdentityKey).filter(Boolean),
+              );
+              setSearchRun({ query: run?.query || '', keys, count: keys.size });
+              // Land on the results of the run just finished, not the whole list.
+              setOnlyThisSearch(keys.size > 0);
+              setTextSearch('');
+              setStatusFilter('all');
               invalidateApiCache([API_CACHE_KEYS.avatar12Leads, API_CACHE_KEYS.funnel]);
               fetchLeads({ force: true });
               fetchFunnelData({ force: true });
@@ -665,6 +1016,70 @@ function RecruitmentWorkspaceContent() {
             <h3 className="individual-list-header__title">Outreach Drafts</h3>
             <span className="individual-list-header__count">{filteredLeads.length} · {activeSegmentMeta.shortLabel}</span>
           </div>
+
+          {/* Compact filter: list is scoped to the latest search until cleared. */}
+          {searchRun && (
+            <div
+              className={`search-run-filter${onlyThisSearch ? ' search-run-filter--active' : ''}`}
+              role="status"
+              aria-live="polite"
+            >
+              {searchRun.count === 0 ? (
+                <p className="search-run-filter__empty">
+                  No matches from your latest search for <strong>{searchRun.query}</strong>
+                </p>
+              ) : (
+                <>
+                  <div className="search-run-filter__copy">
+                    <span className="search-run-filter__eyebrow">
+                      {onlyThisSearch ? 'Results from your latest search' : 'Latest search'}
+                    </span>
+                    <button
+                      type="button"
+                      className={`search-run-filter__chip${onlyThisSearch ? ' is-on' : ''}`}
+                      onClick={() => setOnlyThisSearch((prev) => !prev)}
+                      aria-pressed={onlyThisSearch}
+                      title={onlyThisSearch ? 'Show all drafts' : 'Show only this search'}
+                    >
+                      <span className="search-run-filter__chip-query">{searchRun.query}</span>
+                      <span className="search-run-filter__chip-count">
+                        {searchRun.count} lead{searchRun.count === 1 ? '' : 's'}
+                      </span>
+                    </button>
+                  </div>
+                </>
+              )}
+
+              <div className="search-run-filter__actions">
+                {searchRun.count > 0 && onlyThisSearch && (
+                  <button
+                    type="button"
+                    className="search-run-filter__toggle"
+                    onClick={() => setOnlyThisSearch(false)}
+                  >
+                    Show all
+                  </button>
+                )}
+                {searchRun.count > 0 && !onlyThisSearch && (
+                  <button
+                    type="button"
+                    className="search-run-filter__toggle"
+                    onClick={() => setOnlyThisSearch(true)}
+                  >
+                    This search only
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="search-run-filter__dismiss"
+                  onClick={() => { setSearchRun(null); setOnlyThisSearch(false); }}
+                  aria-label="Dismiss search filter"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="individual-list-toolbar">
             <div className="individual-list-toolbar__search">
@@ -746,7 +1161,7 @@ function RecruitmentWorkspaceContent() {
                     textTransform: 'capitalize'
                   }}
                 >
-                  {status}
+                  {status === 'sent' ? 'Sent' : 'Draft'}
                 </button>
               ))}
             </div>
@@ -772,7 +1187,7 @@ function RecruitmentWorkspaceContent() {
 
         {/* Scrollable list content */}
         <DotScrollArea className="workspace-list-pane__scroll">
-          {loading ? (
+          {loading && leads.length === 0 ? (
             /* Skeleton list loader */
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {[1, 2, 3, 4, 5].map((idx) => (
@@ -799,24 +1214,27 @@ function RecruitmentWorkspaceContent() {
                 Retry Fetch
               </button>
             </div>
-          ) : leads.length === 0 ? (
-            /* Empty state pointing to Home */
+          ) : filteredLeads.length === 0 ? (
+            /* Empty for this segment (or active filters) */
             <div style={{ textAlign: 'center', padding: '40px 16px', display: 'flex', flexDirection: 'column', gap: '16px', alignItems: 'center' }}>
               <Briefcase size={40} style={{ color: 'var(--text-muted)' }} />
               <div>
-                <h5 style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '6px' }}>No {activeSegmentMeta.label.toLowerCase()} drafts yet</h5>
+                <h5 style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '6px' }}>
+                  {leads.length === 0 || !leads.some((l) => l.avatar_type === leadSegment)
+                    ? `No ${activeSegmentMeta.label.toLowerCase()} drafts yet`
+                    : 'No drafts match your search or filters.'}
+                </h5>
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', lineHeight: '1.4', maxWidth: '280px' }}>
-                  Head to Find New Leads to search for {activeSegmentMeta.label.toLowerCase()}. New matches will appear here as drafts ready to review and send.
+                  {leads.length === 0 || !leads.some((l) => l.avatar_type === leadSegment)
+                    ? `Head to Find New Leads to search for ${activeSegmentMeta.label.toLowerCase()}. New matches will appear here as drafts ready to review and send.`
+                    : 'Try clearing search or status filters.'}
                 </p>
               </div>
-              <button type="button" onClick={() => setWorkspaceSection('source')} className="btn-primary" style={{ padding: '8px 16px', fontSize: '0.75rem' }}>
-                Find new leads
-              </button>
-            </div>
-          ) : filteredLeads.length === 0 ? (
-            /* Empty state for active filter */
-            <div style={{ textAlign: 'center', padding: '40px 16px', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-              No drafts match your search or filters.
+              {(leads.length === 0 || !leads.some((l) => l.avatar_type === leadSegment)) && (
+                <button type="button" onClick={() => setWorkspaceSection('source')} className="btn-primary" style={{ padding: '8px 16px', fontSize: '0.75rem' }}>
+                  Find new leads
+                </button>
+              )}
             </div>
           ) : (
             /* Leads list */
@@ -824,86 +1242,55 @@ function RecruitmentWorkspaceContent() {
               {filteredLeads.map((lead) => {
                 const isActive = lead.id === selectedLeadId;
                 const draftStatus = lead.latest_draft?.status || 'draft';
-                
+                const fromThisSearch = isFromSearchRun(lead);
+                const companyMissing = isMissingField(lead.company);
+                const locationMissing = isMissingField(lead.location);
+                const subtitle = stripEmDashes(lead.headline || lead.role || '').trim();
+
                 return (
                   <div
                     key={lead.id}
                     onClick={() => handleSelectLead(lead.id)}
-                    style={{
-                      background: isActive ? 'rgba(75, 85, 99, 0.04)' : '#ffffff',
-                      border: `1px solid ${isActive ? COLORS.oldRose : 'var(--border-color)'}`,
-                      borderRadius: '12px',
-                      padding: '16px',
-                      cursor: 'pointer',
-                      transition: 'all 0.2s ease',
-                      boxShadow: isActive ? '0 0 0 3px rgba(75, 85, 99, 0.08)' : 'none'
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!isActive) e.currentTarget.style.borderColor = 'var(--border-hover)';
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!isActive) e.currentTarget.style.borderColor = 'var(--border-color)';
-                    }}
+                    className={[
+                      'outreach-lead-card',
+                      isActive ? 'is-active' : '',
+                      fromThisSearch && !onlyThisSearch ? 'is-from-search' : '',
+                    ].filter(Boolean).join(' ')}
                   >
-                    {/* Name + Status badge row */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', marginBottom: '6px' }}>
-                      <span style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
-                        {lead.name}
-                      </span>
-                      
-                      {/* Status badge */}
-                      <span style={{
-                        fontSize: '0.65rem',
-                        fontWeight: 700,
-                        textTransform: 'uppercase',
-                        padding: '2px 8px',
-                        borderRadius: '6px',
-                        border: `1px solid ${
-                          draftStatus === 'sent' ? RGBA.success20 : 
-                          draftStatus === 'failed' ? 'rgba(184, 107, 107, 0.25)' : 
-                          'rgba(75, 85, 99, 0.25)'
-                        }`,
-                        background: `${
-                          draftStatus === 'sent' ? RGBA.success06 : 
-                          draftStatus === 'failed' ? 'rgba(184, 107, 107, 0.06)' : 
-                          'rgba(75, 85, 99, 0.06)'
-                        }`,
-                        color: `${
-                          draftStatus === 'sent' ? COLORS.success : 
-                          draftStatus === 'failed' ? COLORS.error : 
-                          COLORS.oldRose
-                        }`
-                      }}>
-                        {draftStatus}
-                      </span>
+                    <div className="outreach-lead-card__top">
+                      <span className="outreach-lead-card__name">{lead.name}</span>
+                      <div className="outreach-lead-card__top-actions">
+                        <button
+                          type="button"
+                          className="outreach-lead-card__edit"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSelectLead(lead.id, { edit: true });
+                          }}
+                          aria-label={`Edit ${lead.name}`}
+                          title="Edit lead"
+                        >
+                          <Pencil size={13} />
+                          Edit
+                        </button>
+                        <span className={`outreach-lead-card__status outreach-lead-card__status--${draftStatus}`}>
+                          {draftStatusLabel(draftStatus)}
+                        </span>
+                      </div>
                     </div>
 
-                    {/* Headline / Role description */}
-                    <div style={{ 
-                      fontSize: '0.75rem', 
-                      color: 'var(--text-secondary)', 
-                      marginBottom: '10px',
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis'
-                    }}>
-                      {lead.headline || lead.role || 'Sales Professional'}
-                    </div>
+                    {subtitle ? (
+                      <div className="outreach-lead-card__subtitle">{subtitle}</div>
+                    ) : null}
 
-                    <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary)', marginBottom: '8px', fontStyle: 'italic' }}>
-                      Query: {lead.source_query || 'no source query'}
-                    </div>
-
-                    {/* Bottom badges: Location & Avatar badge */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.7rem' }}>
-                      <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        <MapPin size={10} />
-                        {lead.location || 'US'}
+                    <div className="outreach-lead-card__meta">
+                      <span className={companyMissing ? 'is-missing' : ''}>
+                        <Building2 size={10} aria-hidden="true" />
+                        {displayField(lead.company, 'company')}
                       </span>
-
-                      {/* Avatar badge */}
-                      <span className="segment-type-badge">
-                        {individualShortLabel(lead.avatar_type)}
+                      <span className={locationMissing ? 'is-missing' : ''}>
+                        <MapPin size={10} aria-hidden="true" />
+                        {displayField(lead.location, 'location')}
                       </span>
                     </div>
                   </div>
@@ -948,13 +1335,25 @@ function RecruitmentWorkspaceContent() {
                       {individualShortLabel(selectedLeadDetails.avatar_type)}
                     </span>
                     <span className={`individual-lead-detail__status individual-lead-detail__status--${(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft')}`}>
-                      {selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft'}
+                      {draftStatusLabel(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft')}
                     </span>
                   </div>
                 </div>
-                <button type="button" onClick={() => handleSelectLead('')} className="individual-lead-detail__close" aria-label="Close">
-                  <X size={18} />
-                </button>
+                <div className="individual-lead-detail__header-actions">
+                  {!editingLead && (
+                    <button
+                      type="button"
+                      className="individual-lead-detail__edit"
+                      onClick={() => startEditingLead(selectedLeadDetails)}
+                    >
+                      <Pencil size={14} />
+                      Edit
+                    </button>
+                  )}
+                  <button type="button" onClick={() => handleSelectLead('')} className="individual-lead-detail__close" aria-label="Close">
+                    <X size={18} />
+                  </button>
+                </div>
               </div>
 
               <nav className="individual-lead-tabs" aria-label="Lead detail sections">
@@ -978,234 +1377,178 @@ function RecruitmentWorkspaceContent() {
               <DotScrollArea className="individual-lead-detail__body">
               {activeTab === 'profile' && (
                 <div className="individual-lead-profile">
-                  <p className="individual-lead-profile__headline">
-                    {selectedLeadDetails.headline || selectedLeadDetails.role || 'Sales Professional'}
-                  </p>
+                  {editingLead && editForm ? (
+                    <form
+                      className="lead-edit-form"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        saveLeadEdits();
+                      }}
+                    >
+                      <p className="lead-edit-form__hint">
+                        Check the LinkedIn profile, then correct any fields that look wrong.
+                      </p>
 
-                  <dl className="individual-lead-profile__facts">
-                    {selectedLeadDetails.company && (
-                      <div className="individual-lead-profile__fact">
-                        <dt>Company</dt>
-                        <dd>{selectedLeadDetails.company}</dd>
-                      </div>
-                    )}
-                    <div className="individual-lead-profile__fact">
-                      <dt>Location</dt>
-                      <dd>{selectedLeadDetails.location || 'US'}</dd>
-                    </div>
-                    {selectedLeadDetails.linkedin_url && (
-                      <div className="individual-lead-profile__fact">
-                        <dt>LinkedIn</dt>
-                        <dd>
-                          <a
-                            href={selectedLeadDetails.linkedin_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="individual-lead-profile__link"
-                          >
-                            View profile
-                            <ArrowUpRight size={12} aria-hidden="true" />
-                          </a>
-                        </dd>
-                      </div>
-                    )}
-                  </dl>
+                      {(editForm.linkedin_url || selectedLeadDetails.linkedin_url) && (
+                        <a
+                          href={editForm.linkedin_url || selectedLeadDetails.linkedin_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="lead-edit-form__linkedin"
+                        >
+                          <ExternalLink size={14} />
+                          Open LinkedIn profile
+                        </a>
+                      )}
 
-                  <div className="individual-lead-profile__source">
-                    <span className="individual-lead-profile__source-label">Sourced via</span>
-                    <p>{selectedLeadDetails.source_query || 'No source query'}</p>
-                    {selectedLeadDetails.search_prompt && (
-                      <p className="individual-lead-profile__prompt">&ldquo;{selectedLeadDetails.search_prompt}&rdquo;</p>
-                    )}
-                  </div>
+                      {[
+                        { key: 'name', label: 'Name', required: true },
+                        { key: 'headline', label: 'Headline' },
+                        { key: 'role', label: 'Role' },
+                        { key: 'company', label: 'Company' },
+                        { key: 'location', label: 'Location' },
+                        { key: 'linkedin_url', label: 'LinkedIn URL' },
+                      ].map((field) => (
+                        <label key={field.key} className="lead-edit-form__field">
+                          <span>{field.label}</span>
+                          <input
+                            type="text"
+                            value={editForm[field.key]}
+                            required={field.required}
+                            placeholder={field.key === 'company' || field.key === 'location' ? 'Add if you have it' : undefined}
+                            onChange={(e) =>
+                              setEditForm((prev) => ({ ...prev, [field.key]: e.target.value }))
+                            }
+                          />
+                        </label>
+                      ))}
+
+                      <div className="lead-edit-form__actions">
+                        <button type="button" className="lead-edit-form__cancel" onClick={cancelEditingLead} disabled={savingLead}>
+                          Cancel
+                        </button>
+                        <button type="submit" className="btn-primary lead-edit-form__save" disabled={savingLead}>
+                          {savingLead ? 'Saving…' : 'Save changes'}
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <>
+                      <p className="individual-lead-profile__headline">
+                        {stripEmDashes(
+                          selectedLeadDetails.headline
+                          || selectedLeadDetails.role
+                          || 'Sales Professional'
+                        )}
+                      </p>
+
+                      <dl className="individual-lead-profile__facts">
+                        <div className="individual-lead-profile__fact">
+                          <dt>Company</dt>
+                          <dd className={isMissingField(selectedLeadDetails.company) ? 'is-missing' : undefined}>
+                            {displayField(selectedLeadDetails.company, 'company')}
+                          </dd>
+                        </div>
+                        <div className="individual-lead-profile__fact">
+                          <dt>Location</dt>
+                          <dd className={isMissingField(selectedLeadDetails.location) ? 'is-missing' : undefined}>
+                            {displayField(selectedLeadDetails.location, 'location')}
+                          </dd>
+                        </div>
+                        <div className="individual-lead-profile__fact individual-lead-profile__fact--wide">
+                          <dt>LinkedIn</dt>
+                          <dd>
+                            {selectedLeadDetails.linkedin_url ? (
+                              <a
+                                href={selectedLeadDetails.linkedin_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="individual-lead-profile__link"
+                              >
+                                View profile
+                                <ArrowUpRight size={12} aria-hidden="true" />
+                              </a>
+                            ) : (
+                              <span className="is-missing">Add LinkedIn</span>
+                            )}
+                          </dd>
+                        </div>
+                      </dl>
+
+                      <div className="individual-lead-profile__source">
+                        <span className="individual-lead-profile__source-label">
+                          Sourced via your query
+                          {(selectedLeadDetails.source_query || selectedLeadDetails.search_prompt) && (
+                            <>
+                              {' '}
+                              <em className="individual-lead-profile__source-query">
+                                &ldquo;{selectedLeadDetails.source_query || selectedLeadDetails.search_prompt}&rdquo;
+                              </em>
+                            </>
+                          )}
+                        </span>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
               {activeTab === 'compose' && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                  {/* Email compose card */}
-                  <div style={{ 
-                    background: '#ffffff', 
-                    border: '1px solid var(--border-color)', 
-                    borderRadius: '12px', 
-                    overflow: 'hidden',
-                    boxShadow: '0 1px 4px rgba(0,0,0,0.04)'
-                  }}>
-                    {/* Email header — To: line */}
-                    <div style={{ 
-                      padding: '14px 20px', 
-                      borderBottom: '1px solid var(--border-color)', 
-                      background: COLORS.white,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      fontSize: '0.85rem'
-                    }}>
-                      <span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>To:</span>
-                      <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-                        {selectedLeadDetails.name}
-                      </span>
-                      {selectedLeadDetails.linkedin_url && (
-                        <>
-                          <span style={{ color: 'var(--text-muted)' }}>·</span>
-                          <a 
-                            href={selectedLeadDetails.linkedin_url} 
-                            target="_blank" 
-                            rel="noreferrer"
-                            style={{ color: COLORS.oldRose, fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '3px' }}
-                          >
-                            LinkedIn <ArrowUpRight size={10} />
-                          </a>
-                        </>
-                      )}
-                      {noDraftExists && (
-                        <span style={{ marginLeft: 'auto', fontSize: '0.7rem', background: RGBA.amber08, color: COLORS.warning, padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(180,83,9,0.15)', fontWeight: 600 }}>
+                  <div className="individual-compose-editor">
+                    {noDraftExists && (
+                      <div className="individual-compose-editor__banner">
+                        <span className="individual-compose-editor__badge">
                           No AI Draft
                         </span>
-                      )}
-                    </div>
-
-                    {/* From line */}
-                    <div style={{ 
-                      padding: '10px 20px', 
-                      borderBottom: '1px solid var(--border-color)', 
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      fontSize: '0.82rem'
-                    }}>
-                      <span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>From:</span>
-                      <span style={{ color: 'var(--text-secondary)' }}>{BRAND.senderName}</span>
-                    </div>
-                    
-                    {/* Delivery channel & contact */}
-                    <div style={{ 
-                      padding: '12px 20px', 
-                      borderBottom: '1px solid var(--border-color)', 
-                      display: 'flex',
-                      flexWrap: 'wrap',
-                      gap: '12px',
-                      alignItems: 'center',
-                      fontSize: '0.82rem'
-                    }}>
-                      <span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>Send via:</span>
-                      {['email', 'sms', 'both'].map((ch) => (
-                        <button
-                          key={ch}
-                          type="button"
-                          onClick={() => setSendChannel(ch)}
-                          style={{
-                            padding: '4px 10px',
-                            borderRadius: '6px',
-                            border: sendChannel === ch ? `1px solid ${COLORS.oldRose}` : '1px solid var(--border-color)',
-                            background: sendChannel === ch ? RGBA.neutral06 : '#fff',
-                            color: sendChannel === ch ? COLORS.oldRose : 'var(--text-secondary)',
-                            fontWeight: sendChannel === ch ? 600 : 500,
-                            cursor: 'pointer',
-                            textTransform: 'uppercase',
-                            fontSize: '0.72rem',
-                          }}
-                        >
-                          {ch === 'both' ? 'Email + SMS' : ch}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="form-grid-2" style={{ 
-                      padding: '10px 20px', 
-                      borderBottom: '1px solid var(--border-color)', 
-                    }}>
-                      <div>
-                        <label style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Email</label>
-                        <input
-                          type="email"
-                          value={contactEmail}
-                          onChange={(e) => {
-                            setContactEmail(e.target.value);
-                            setEmailError('');
-                          }}
-                          placeholder="lead@example.com"
-                          style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: emailError ? '1px solid var(--error-color, #b86b6b)' : '1px solid var(--border-color)', fontSize: '0.82rem' }}
-                        />
-                        {emailError && <span style={{ color: 'var(--error-color, #b86b6b)', fontSize: '0.72rem', marginTop: '2px', display: 'block' }}>{emailError}</span>}
                       </div>
-                      <div>
-                        <label style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Phone (SMS)</label>
-                        <input
-                          type="tel"
-                          value={contactPhone}
-                          onChange={(e) => {
-                            setContactPhone(e.target.value);
-                            setPhoneError('');
-                          }}
-                          placeholder="+1 555 000 0000"
-                          style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: phoneError ? '1px solid var(--error-color, #b86b6b)' : '1px solid var(--border-color)', fontSize: '0.82rem' }}
-                        />
-                        {phoneError && <span style={{ color: 'var(--error-color, #b86b6b)', fontSize: '0.72rem', marginTop: '2px', display: 'block' }}>{phoneError}</span>}
-                      </div>
-                    </div>
+                    )}
 
-                    {/* Message body — editable textarea */}
-                    <textarea
-                      value={draftMessage}
-                      onChange={(e) => setDraftMessage(e.target.value)}
-                      placeholder="Compose your outreach message here..."
-                      style={{
-                        width: '100%',
-                        background: '#ffffff',
-                        border: 'none',
-                        padding: '20px',
-                        fontFamily: 'inherit',
-                        lineHeight: '1.7',
-                        fontSize: '0.92rem',
-                        color: 'var(--text-primary)',
-                        minHeight: '240px',
-                        outline: 'none',
-                        resize: 'vertical',
-                        display: 'block'
-                      }}
-                    />
+                    <DotScrollArea
+                      className="individual-compose-editor__scroll"
+                      trackNestedScroll
+                    >
+                      <textarea
+                        className="individual-compose-editor__textarea"
+                        value={draftMessage}
+                        onChange={(e) => setDraftMessage(e.target.value)}
+                        placeholder="Your outreach draft will appear here..."
+                      />
+                    </DotScrollArea>
 
                     <div className="individual-compose-footer" style={{ flexWrap: 'wrap', gap: '12px' }}>
                       <span className="individual-compose-footer__count">
                         {draftMessage.length} characters
                       </span>
-                      {(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft') === 'sent' ? (
-                        <span className="individual-compose-footer__sent">
-                          <CheckCircle2 size={16} />
-                          Sent
-                        </span>
-                      ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'flex-end' }}>
-                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                            {(sendChannel === 'email' || sendChannel === 'both') && (
-                              <button
-                                type="button"
-                                className="btn-primary individual-compose-footer__send"
-                                onClick={() => handleSendVia('email')}
-                              >
-                                <Send size={14} />
-                                Send Email
-                              </button>
-                            )}
-                            {(sendChannel === 'sms' || sendChannel === 'both') && (
-                              <button
-                                type="button"
-                                className="btn-primary individual-compose-footer__send"
-                                onClick={() => handleSendVia('sms')}
-                                style={{ background: 'var(--old-rose)', borderColor: 'var(--old-rose)' }}
-                              >
-                                <Send size={14} />
-                                Send SMS
-                              </button>
-                            )}
-                          </div>
-                          {(sendChannel === 'sms' || sendChannel === 'both') && (
-                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textAlign: 'right' }}>
-                              Opens your device's messaging app — availability depends on your OS
-                            </span>
-                          )}
-                        </div>
-                      )}
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                        {(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft') !== 'sent' && (
+                          <button
+                            type="button"
+                            className="chip-fallback-btn"
+                            onClick={handleCopyDraft}
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                          >
+                            {draftCopied ? <Check size={14} /> : <Copy size={14} />}
+                            {draftCopied ? 'Copied' : 'Copy draft'}
+                          </button>
+                        )}
+                        {(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft') === 'sent' ? (
+                          <span className="individual-compose-footer__sent">
+                            <CheckCircle2 size={16} />
+                            Marked as sent
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn-primary individual-compose-footer__send"
+                            onClick={requestMarkAsSent}
+                            disabled={markingSent}
+                          >
+                            <CheckCircle2 size={14} />
+                            Mark as sent
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -1224,7 +1567,7 @@ function RecruitmentWorkspaceContent() {
                 </div>
               )}
 
-              {/* Sent review — only available after outreach is sent */}
+              {/* Sent review after compose */}
               {activeTab === 'history' && isLatestDraftSent && (
                 <div className="glass-card" style={{ padding: '24px', border: '1px solid var(--border-color)' }}>
                   <h4 style={{ fontWeight: 600, fontSize: '1rem', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -1237,39 +1580,39 @@ function RecruitmentWorkspaceContent() {
                       No sent outreach recorded for this prospect.
                     </div>
                   ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', position: 'relative', borderLeft: '1px solid var(--border-color)', paddingLeft: '20px', marginLeft: '10px' }}>
+                    <div className="individual-sent-timeline">
                       {selectedLeadDetails.drafts.slice().reverse().map((draft, idx) => (
-                        <div key={draft.id || idx} style={{ position: 'relative' }}>
-                          <div style={{
-                            position: 'absolute',
-                            left: '-26px',
-                            top: '4px',
-                            width: '10px',
-                            height: '10px',
-                            borderRadius: '50%',
-                            background: draft.status === 'sent' ? COLORS.success : COLORS.oldRose,
-                            border: '2px solid #ffffff'
-                          }}></div>
-                          
-                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
-                            <span style={{ fontWeight: 600, color: draft.status === 'sent' ? COLORS.success : COLORS.oldRose }}>
-                              {draft.status.toUpperCase()}
-                            </span>
-                            <span>
-                              {draft.created_at ? new Date(draft.created_at).toLocaleString() : 'Recent'}
-                            </span>
-                          </div>
-                          
-                          <div style={{
-                            background: COLORS.white,
-                            border: '1px solid var(--border-color)',
-                            borderRadius: '8px',
-                            padding: '12px 16px',
-                            fontSize: '0.85rem',
-                            color: 'var(--text-secondary)',
-                            whiteSpace: 'pre-wrap'
-                          }}>
-                            {stripEmDashes(draft.message)}
+                        <div key={draft.id || idx} className="individual-sent-timeline__item">
+                          <span
+                            className={`individual-sent-timeline__dot${
+                              draft.status === 'sent'
+                                ? ' individual-sent-timeline__dot--sent'
+                                : ' individual-sent-timeline__dot--draft'
+                            }`}
+                            aria-hidden="true"
+                          />
+                          <div className="individual-sent-timeline__content">
+                            <div className="individual-sent-timeline__meta">
+                              <span className={`individual-sent-timeline__status${
+                                draft.status === 'sent'
+                                  ? ' individual-sent-timeline__status--sent'
+                                  : ' individual-sent-timeline__status--draft'
+                              }`}>
+                                {draftStatusLabel(draft.status).toUpperCase()}
+                              </span>
+                              <span className="individual-sent-timeline__time">
+                                {draft.status === 'sent'
+                                  ? (draft.sent_at
+                                    ? new Date(draft.sent_at).toLocaleString()
+                                    : 'Sent time not recorded')
+                                  : (draft.created_at
+                                    ? new Date(draft.created_at).toLocaleString()
+                                    : 'Recent')}
+                              </span>
+                            </div>
+                            <div className="individual-sent-timeline__message">
+                              {stripEmDashes(draft.message)}
+                            </div>
                           </div>
                         </div>
                       ))}
@@ -1285,20 +1628,14 @@ function RecruitmentWorkspaceContent() {
                     <Activity size={16} style={{ color: COLORS.oldRose }} />
                     Individual Intake Funnel
                   </h4>
-                  
+
                   <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '32px', lineHeight: '1.6' }}>
-                    Outreach messages include custom trackable intake forms and scheduling links. Future modules will capture real-time user metrics dynamically.
+                    Live progress from this lead&apos;s tracked intake link: clicks, form activity, and meeting bookings recorded from the landing page.
                   </p>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-                    {[
-                      { label: 'Outreach Dispatched', desc: 'Personalized outreach message sent.', completed: (selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status === 'sent') },
-                      { label: 'Link Clicked', desc: 'Prospect opened the custom landing page link.', completed: false },
-                      { label: 'Intake Form Started', desc: 'Prospect initiated form questions.', completed: false },
-                      { label: 'Form Submitted', desc: 'Lead submitted license details & experience.', completed: false },
-                      { label: 'Meeting Scheduled', desc: 'Calendar booking completed via workspace integrations.', completed: false }
-                    ].map((step, index) => (
-                      <div key={index} style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
+                    {buildIndividualFunnelSteps(selectedLeadDetails).map((step, index, steps) => (
+                      <div key={step.id} style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                           <div style={{
                             width: '24px',
@@ -1315,11 +1652,13 @@ function RecruitmentWorkspaceContent() {
                           }}>
                             {step.completed ? '✓' : index + 1}
                           </div>
-                          {index < 4 && (
+                          {index < steps.length - 1 && (
                             <div style={{
                               width: '2px',
                               height: '32px',
-                              background: 'var(--border-color)',
+                              background: step.completed && steps[index + 1].completed
+                                ? COLORS.success
+                                : 'var(--border-color)',
                               marginTop: '4px'
                             }}></div>
                           )}
@@ -1331,6 +1670,11 @@ function RecruitmentWorkspaceContent() {
                           <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                             {step.desc}
                           </p>
+                          {step.completed && formatFunnelTimestamp(step.at) && (
+                            <p style={{ fontSize: '0.7rem', color: COLORS.success, marginTop: '4px' }}>
+                              Last performed at: {formatFunnelTimestamp(step.at)}
+                            </p>
+                          )}
                         </div>
                       </div>
                     ))}

@@ -5,6 +5,22 @@ import { useParams } from 'next/navigation';
 import { Video, Calendar, Send, FileText, CheckCircle, AlertTriangle, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
 import { BRAND } from '../../../lib/brand';
 import { COLORS, GRADIENT, RGBA } from '../../../lib/colors';
+import { getApiBaseUrl } from '../../../lib/apiBaseUrl';
+
+function linkClickedStorageKey(leadId) {
+  return String(leadId || '');
+}
+
+/** Survives React Strict Mode remounts in one page load; clears on full refresh. */
+const recordedLinkClicks = new Set();
+
+function shouldRecordLinkClick(leadId) {
+  const key = linkClickedStorageKey(leadId);
+  if (!key) return false;
+  if (recordedLinkClicks.has(key)) return false;
+  recordedLinkClicks.add(key);
+  return true;
+}
 
 function getDaysInMonthGrid(dateObj) {
   const year = dateObj.getFullYear();
@@ -98,13 +114,17 @@ export default function LandingPage() {
     if (!leadId) { setError(true); setLoading(false); return; }
 
     const isTestId = leadId === 'test123' || leadId === 'demo-lead' || leadId.toString().startsWith('test');
+    const controller = new AbortController();
 
     const fetchLead = async () => {
       try {
-        const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
-        const res = await fetch(`${apiBaseUrl}/api/avatar12/leads/${leadId}`);
+        const apiBaseUrl = getApiBaseUrl();
+        const res = await fetch(`${apiBaseUrl}/api/avatar12/leads/${leadId}`, {
+          signal: controller.signal,
+        });
         if (res.ok) {
           const data = await res.json();
+          if (controller.signal.aborted) return;
           setLeadData(data);
           setFormData(prev => ({
             ...prev,
@@ -112,22 +132,28 @@ export default function LandingPage() {
             email: data.contact_email || data.email || '',
             phone: data.contact_phone || data.phone || '',
           }));
-          fetch(`${apiBaseUrl}/api/funnel-events/link_clicked`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ lead_id: leadId }),
-          }).catch(() => {});
+          if (shouldRecordLinkClick(leadId)) {
+            fetch(`${apiBaseUrl}/api/funnel-events/link_clicked`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ lead_id: leadId }),
+            }).catch(() => {});
+          }
         } else if (isTestId) {
           setLeadData({ id: leadId, name: 'Alex Johnson', email: 'alex.johnson@example.com', phone: '+1 (555) 019-2834', avatar_type: 'Avatar 1' });
           setFormData(prev => ({ ...prev, name: 'Alex Johnson', email: 'alex.johnson@example.com', phone: '+1 (555) 019-2834' }));
         } else { setError(true); }
-      } catch {
+      } catch (err) {
+        if (err?.name === 'AbortError') return;
         if (isTestId) {
           setLeadData({ id: leadId, name: 'Alex Johnson (Mock)', avatar_type: 'Avatar 1' });
         } else { setError(true); }
-      } finally { setLoading(false); }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
     };
     fetchLead();
+    return () => controller.abort();
   }, [leadId]);
 
   const handleInputChange = (e) => {
@@ -135,7 +161,7 @@ export default function LandingPage() {
     setFormData(prev => ({ ...prev, [name]: value }));
     if (!formStarted) {
       setFormStarted(true);
-      const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
+      const apiBaseUrl = getApiBaseUrl();
       fetch(`${apiBaseUrl}/api/funnel-events/form_started`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lead_id: leadId }),
@@ -146,7 +172,7 @@ export default function LandingPage() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setFormSubmitted(true);
-    const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
+    const apiBaseUrl = getApiBaseUrl();
     try {
       await fetch(`${apiBaseUrl}/api/funnel-events/form_submitted`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -158,7 +184,7 @@ export default function LandingPage() {
   const handleBookMeeting = async () => {
     if (!selectedDate || !selectedTime) return;
     setBookingSubmitting(true);
-    const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
+    const apiBaseUrl = getApiBaseUrl();
     const dateStr = selectedDate.toISOString().split('T')[0];
     try {
       await fetch(`${apiBaseUrl}/api/funnel-events/meeting_booked`, {

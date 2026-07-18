@@ -148,7 +148,7 @@ export async function researchLeads(searchPrompt, options = {}) {
     options.researchModel ?? process.env.CLAUDE_RESEARCH_MODEL ?? DEFAULT_RESEARCH_MODEL;
 
   return callClaude({
-    prompt: searchOnlyPrompt(searchPrompt),
+    prompt: searchOnlyPrompt(searchPrompt, options.searchRecipe ?? null),
     model,
     useSearch: true,
     maxTokens: 8192,
@@ -183,7 +183,7 @@ export async function structureLeadsFromRaw(rawItems, searchPrompt, options = {}
   }
 
   return callClaude({
-    prompt: structureLeadsPrompt(rawItems, searchPrompt, maxResults),
+    prompt: structureLeadsPrompt(rawItems, searchPrompt, maxResults, options.structureContext ?? null),
     model,
     useSearch: false,
     maxTokens: 8192,

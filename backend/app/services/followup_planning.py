@@ -74,7 +74,7 @@ def _build_graph(client_call):
         if not suggested_channel:
             raise LLMResponseError("Follow-up planner returned an empty suggested_channel.")
         if not reasoning:
-            reasoning = "Claude recommended a follow-up action."
+            reasoning = "The AI recommended a follow-up action."
 
         return {
             "recommended_action": recommended_action,
@@ -124,7 +124,7 @@ def plan_follow_up(
     if not recommended_action or not suggested_channel:
         return None
     if not reasoning:
-        reasoning = "Claude recommended a follow-up action."
+        reasoning = "The AI recommended a follow-up action."
     return {
         "recommended_action": recommended_action,
         "suggested_channel": suggested_channel,

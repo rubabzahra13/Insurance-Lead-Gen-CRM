@@ -28,10 +28,27 @@ def _track_task(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
     return task
 
 
+class LocationPayload(BaseModel):
+    placeId: str | None = None
+    label: str | None = None
+    mainText: str | None = None
+    secondaryText: str | None = None
+    city: str | None = None
+    region: str | None = None
+    country: str | None = None
+    countryCode: str | None = None
+    scope: str | None = None
+    types: list[str] | None = None
+    formattedAddress: str | None = None
+
+
 class ScrapeRequest(BaseModel):
-    query: str
+    query: str | None = None  # legacy single-box; prefer role + location
+    role: str | None = None
+    location: LocationPayload | None = None
     maxResults: int | None = None
     avatarType: str | None = None
+    provider: str | None = None  # "serpapi" for the fast experimental engine
 
 
 async def _broadcast(job: dict[str, Any], event: dict[str, Any] | None) -> None:
@@ -43,13 +60,27 @@ async def _broadcast(job: dict[str, Any], event: dict[str, Any] | None) -> None:
             pass
 
 
-async def _run_job(job_id: str, query: str, max_results: int, avatar_type: str | None = None) -> None:
+async def _run_job(
+    job_id: str,
+    query: str,
+    max_results: int,
+    avatar_type: str | None = None,
+    provider: str | None = None,
+    role: str | None = None,
+    location: dict[str, Any] | None = None,
+) -> None:
     job = _jobs[job_id]
     job["startedAt"] = job.get("startedAt") or datetime.now(timezone.utc).isoformat()
 
     env = os.environ.copy()
     if avatar_type in {"avatar1", "avatar2"}:
         env["AVATAR_TYPE"] = avatar_type
+    if provider:
+        env["SEARCH_PROVIDER"] = provider
+    if role:
+        env["SEARCH_ROLE"] = role
+    if location:
+        env["SEARCH_LOCATION"] = json.dumps(location)
 
     process = await asyncio.create_subprocess_exec(
         "node",
@@ -120,19 +151,42 @@ async def _run_job(job_id: str, query: str, max_results: int, avatar_type: str |
 
 @router.post("")
 async def create_scrape_job(payload: ScrapeRequest):
+    role = (payload.role or "").strip()
     query = (payload.query or "").strip()
-    if not query:
-        raise HTTPException(status_code=400, detail="query is required")
+    location = payload.location.model_dump(exclude_none=True) if payload.location else None
+    if location and not location.get("placeId"):
+        # Free-typed location text is rejected — only Places dropdown selections.
+        location = None
+    location_label = (location or {}).get("label") or (location or {}).get("mainText") or ""
+
+    if not role and not query:
+        raise HTTPException(status_code=400, detail="role is required")
+
+    # Prefer structured role; keep a combined query for logs / legacy.
+    if role:
+        display_query = f"{role} in {location_label}".strip() if location_label else role
+        effective_role = role
+    else:
+        display_query = query
+        effective_role = query
 
     job_id = str(uuid4())
     max_results = int(payload.maxResults or os.getenv("MAX_RESULTS", "25"))
     job = {
         "id": job_id,
         "status": "running",
-        "query": query,
+        "query": display_query,
+        "role": effective_role,
+        "location": location,
         "maxResults": max_results,
         "events": [
-            {"type": "log", "message": f'Sourcing pipeline initialized for query: "{query}"'}
+            {
+                "type": "log",
+                "message": (
+                    f'Sourcing pipeline initialized for role: "{effective_role}"'
+                    + (f', location: "{location_label}"' if location_label else " (no location)")
+                ),
+            }
         ],
         "result": None,
         "error": None,
@@ -143,8 +197,26 @@ async def create_scrape_job(payload: ScrapeRequest):
     }
     _jobs[job_id] = job
 
-    _track_task(asyncio.create_task(_run_job(job_id, query, max_results, payload.avatarType)))
-    return {"runId": job_id, "query": query, "maxResults": max_results}
+    _track_task(
+        asyncio.create_task(
+            _run_job(
+                job_id,
+                display_query,
+                max_results,
+                payload.avatarType,
+                payload.provider,
+                effective_role,
+                location,
+            )
+        )
+    )
+    return {
+        "runId": job_id,
+        "query": display_query,
+        "role": effective_role,
+        "location": location,
+        "maxResults": max_results,
+    }
 
 
 async def shutdown_scrape_jobs() -> None:

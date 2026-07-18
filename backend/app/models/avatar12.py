@@ -35,6 +35,8 @@ class AvatarLead(Base):
     search_prompt: Mapped[str | None] = mapped_column(Text)
     source_snapshot: Mapped[str | None] = mapped_column(Text)
     source_query: Mapped[str | None] = mapped_column(Text)
+    fit_evidence: Mapped[str | None] = mapped_column(Text)
+    fit_source: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[str] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
@@ -55,6 +57,7 @@ class LeadDraft(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     reasoning: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    sent_at: Mapped[str | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     avatar_lead = relationship("AvatarLead", back_populates="drafts")
 

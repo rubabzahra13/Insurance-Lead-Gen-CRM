@@ -9,6 +9,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models.avatar12 import AvatarLead, AvatarType
+from app.public_url import rewrite_local_landing_urls
 from app.session import SessionLocal
 from app.services.avatar12_drafts import (
     persist_avatar12_lead,
@@ -60,6 +61,8 @@ def _lead_payload(lead: AvatarLead) -> dict:
         "search_prompt": lead.search_prompt,
         "source_snapshot": lead.source_snapshot,
         "source_query": lead.source_query,
+        "fit_evidence": lead.fit_evidence,
+        "fit_source": lead.fit_source,
         "created_at": lead.created_at,
         "updated_at": lead.updated_at,
     }
@@ -70,9 +73,19 @@ def _draft_payload(draft) -> dict:
         "id": str(draft.id),
         "avatar12_lead_id": str(draft.avatar12_lead_id),
         "status": draft.status,
-        "message": draft.message,
+        "message": rewrite_local_landing_urls(draft.message),
         "reasoning": draft.reasoning,
         "created_at": draft.created_at,
+        "sent_at": draft.sent_at,
+    }
+
+
+def _funnel_event_payload(event) -> dict:
+    return {
+        "id": str(event.id),
+        "event_type": event.event_type.value if event.event_type else None,
+        "payload": event.payload,
+        "created_at": event.created_at,
     }
 
 
@@ -83,6 +96,17 @@ class SendMessageRequest(BaseModel):
     message: str | None = None
     to_email: str | None = None
     to_phone: str | None = None
+    mark_only: bool = False
+
+
+class AvatarLeadUpdate(BaseModel):
+    name: str | None = None
+    headline: str | None = None
+    role: str | None = None
+    company: str | None = None
+    past_experience: str | None = None
+    location: str | None = None
+    linkedin_url: str | None = None
 
 
 @router.get("/leads")
@@ -118,15 +142,41 @@ def get_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
     lead = db.scalar(
         select(AvatarLead)
         .where(AvatarLead.id == lead_id)
-        .options(selectinload(AvatarLead.drafts))
+        .options(
+            selectinload(AvatarLead.drafts),
+            selectinload(AvatarLead.funnel_events),
+        )
     )
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
 
+    events = sorted(
+        lead.funnel_events or [],
+        key=lambda item: item.created_at or "",
+    )
+
     return {
         **_lead_payload(lead),
         "drafts": [_draft_payload(draft) for draft in lead.drafts],
+        "funnel_events": [_funnel_event_payload(event) for event in events],
     }
+
+
+@router.patch("/leads/{lead_id}")
+def update_lead(lead_id: uuid.UUID, payload: AvatarLeadUpdate, db: Session = Depends(get_db)):
+    lead = db.scalar(select(AvatarLead).where(AvatarLead.id == lead_id))
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    data = payload.model_dump(exclude_unset=True)
+    for key, value in data.items():
+        if isinstance(value, str):
+            value = value.strip() or None
+        setattr(lead, key, value)
+
+    db.commit()
+    db.refresh(lead)
+    return _lead_payload(lead)
 
 
 @router.get("/leads/{lead_id}/drafts/latest")
@@ -148,6 +198,7 @@ def send_message(lead_id: uuid.UUID, payload: SendMessageRequest, db: Session = 
             to_email=payload.to_email,
             to_phone=payload.to_phone,
             channels=payload.channels,
+            mark_only=payload.mark_only,
         )
     except OutreachSendError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

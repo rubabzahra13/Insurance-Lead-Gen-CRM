@@ -116,5 +116,5 @@ def classify_search_query(
         "query": trimmed_query,
         "avatar_type": avatar_type,
         "confidence": max(0.0, min(1.0, confidence_value)),
-        "reasoning": reasoning or "Claude classified the search query.",
+        "reasoning": reasoning or "The AI classified the search query.",
     }

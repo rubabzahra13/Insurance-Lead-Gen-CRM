@@ -201,6 +201,16 @@ def update_stage(lead_id: uuid.UUID, payload: LeadStageUpdate, db: Session = Dep
     return _lead_payload(lead)
 
 
+@router.delete("/leads/{lead_id}")
+def delete_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
+    lead = db.get(BusinessLead, lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    db.delete(lead)
+    db.commit()
+    return {"ok": True, "message": f"Lead {lead_id} successfully deleted"}
+
+
 @router.get("/leads/{lead_id}")
 def get_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
     lead = db.scalar(

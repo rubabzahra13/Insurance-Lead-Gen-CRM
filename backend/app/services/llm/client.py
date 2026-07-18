@@ -2,21 +2,34 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from typing import Any
 
-from anthropic import Anthropic
+import httpx
 
-from app.config import ConfigError, load_settings
+from app.config import load_settings
 
 
 logger = logging.getLogger(__name__)
-settings = load_settings()
-client = Anthropic(api_key=settings.claude_api_key)
+load_settings()  # loads .env so OPENAI_* vars are available
+
+OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 
 
 class LLMResponseError(RuntimeError):
     pass
+
+
+def _api_key() -> str:
+    key = (os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY") or "").strip()
+    if not key:
+        raise LLMResponseError("OPENAI_API_KEY is missing or empty.")
+    return key
+
+
+def _model() -> str:
+    return (os.getenv("OPENAI_MODEL") or "").strip() or "gpt-4o-mini"
 
 
 def _schema_hint(response_schema: dict[str, Any]) -> str:
@@ -35,15 +48,24 @@ def _build_prompt(system_prompt: str, response_schema: dict[str, Any], strict: b
     return "\n".join(base)
 
 
+def _strip_code_fences(raw_text: str) -> str:
+    text = raw_text.strip()
+    if text.startswith("```"):
+        text = text.strip("`").strip()
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    return text
+
+
 def _parse_and_validate(raw_text: str, response_schema: dict[str, Any]) -> dict[str, Any]:
     try:
-        parsed = json.loads(raw_text)
+        parsed = json.loads(_strip_code_fences(raw_text))
     except json.JSONDecodeError as exc:
-        raise LLMResponseError(f"Claude returned invalid JSON: {exc.msg}") from exc
+        raise LLMResponseError(f"OpenAI returned invalid JSON: {exc.msg}") from exc
 
     _validate_against_schema(parsed, response_schema)
     if not isinstance(parsed, dict):
-        raise LLMResponseError("Claude response must be a JSON object.")
+        raise LLMResponseError("OpenAI response must be a JSON object.")
     return parsed
 
 
@@ -95,6 +117,34 @@ def _validate_against_schema(value: Any, schema: Any, path: str = "$") -> None:
     raise LLMResponseError(f"Unsupported schema shape at {path}.")
 
 
+def _call_openai(system_prompt: str, user_prompt: str, timeout_seconds: float = 60.0) -> str:
+    response = httpx.post(
+        OPENAI_API_URL,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {_api_key()}",
+        },
+        json={
+            "model": _model(),
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        },
+        timeout=timeout_seconds,
+    )
+    if response.status_code != 200:
+        raise LLMResponseError(
+            f"OpenAI API error ({response.status_code}): {response.text[:200]}"
+        )
+    payload = response.json()
+    return str(
+        payload.get("choices", [{}])[0].get("message", {}).get("content", "")
+    ).strip()
+
+
 def generate_structured(
     system_prompt: str,
     user_prompt: str,
@@ -107,20 +157,14 @@ def generate_structured(
     for strict in (False, True):
         attempts += 1
         try:
-            response = client.messages.create(
-                model=settings.claude_model,
-                max_tokens=2048,
-                temperature=0,
-                system=_build_prompt(system_prompt, response_schema, strict=strict),
-                messages=[{"role": "user", "content": user_prompt}],
+            raw_text = _call_openai(
+                _build_prompt(system_prompt, response_schema, strict=strict),
+                user_prompt,
             )
-            raw_text = "".join(
-                block.text for block in response.content if getattr(block, "type", None) == "text"
-            ).strip()
             parsed = _parse_and_validate(raw_text, response_schema)
             logger.info(
-                "Claude structured call succeeded model=%s attempts=%s latency_ms=%.2f",
-                settings.claude_model,
+                "OpenAI structured call succeeded model=%s attempts=%s latency_ms=%.2f",
+                _model(),
                 attempts,
                 (time.perf_counter() - start) * 1000,
             )
@@ -128,8 +172,8 @@ def generate_structured(
         except Exception as exc:
             last_error = exc
             logger.warning(
-                "Claude structured call failed model=%s attempt=%s latency_ms=%.2f error=%s",
-                settings.claude_model,
+                "OpenAI structured call failed model=%s attempt=%s latency_ms=%.2f error=%s",
+                _model(),
                 attempts,
                 (time.perf_counter() - start) * 1000,
                 exc.__class__.__name__,
@@ -137,4 +181,4 @@ def generate_structured(
             if strict:
                 break
 
-    raise LLMResponseError("Claude failed to return valid structured JSON.") from last_error
+    raise LLMResponseError("OpenAI failed to return valid structured JSON.") from last_error
