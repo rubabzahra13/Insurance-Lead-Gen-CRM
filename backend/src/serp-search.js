@@ -30,7 +30,7 @@ function richSnippetExtensions(richSnippet) {
 
 // One Google query -> array of { title, link, snippet, extensions }.
 // `geo` is optional: { gl, serpLocation } from extractQueryLocation.
-async function runOneSearch(query, num, geo = null) {
+export async function runOneSearch(query, num, geo = null) {
   const config = serpConfig();
   if (!config) throw new Error('No SERPAPI_KEY or SERPER_API_KEY set in .env');
 

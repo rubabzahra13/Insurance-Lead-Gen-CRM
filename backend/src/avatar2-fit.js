@@ -10,7 +10,7 @@ export const SMALL_FIRM_RE =
   /\b(2\s*[-–]\s*10|11\s*[-–]\s*50|independent(ly)?\s+(owned\s+)?(agency|firm|brokerage)|family[ -]?owned|small (agency|firm|brokerage|office)|boutique (agency|firm)|local agency)\b/i;
 
 export const UPSKILL_RE =
-  /\b(upskill|upskilling|career growth|looking to grow|grow my (book|career)|join a (larger|bigger|growing)|ready for (more|the next)|want to (grow|advance|level up)|seeking (growth|advancement)|open to (opportunities|a new (role|team)))\b/i;
+  /\b(upskill|upskilling|career growth|looking to grow|grow my (book|career)|join a (larger|bigger|growing)|ready for (more|the next)|want to (grow|advance|level up)|seeking (growth|advancement)|open to (opportunities|a new (role|team))|expand(ing)? (my )?(book|portfolio|client)|building (my )?(book|pipeline))\b/i;
 
 export const OFF_ROLE_RE =
   /\b(actuary|actuarial|attorney|lawyer|counsel|solicitor|consulate|ambassador|head of marketing|marketing director|fractional legal|trade development|chief advisor)\b/i;

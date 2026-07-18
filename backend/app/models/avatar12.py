@@ -29,6 +29,8 @@ class AvatarLead(Base):
     past_experience: Mapped[str | None] = mapped_column(Text)
     location: Mapped[str | None] = mapped_column(Text)
     company: Mapped[str | None] = mapped_column(Text)
+    # Separate from company: a job seeker is often a student, and an intern has both.
+    school: Mapped[str | None] = mapped_column(Text)
     linkedin_url: Mapped[str | None] = mapped_column(Text)
     contact_email: Mapped[str | None] = mapped_column(String(255))
     contact_phone: Mapped[str | None] = mapped_column(String(64))

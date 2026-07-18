@@ -11,6 +11,7 @@ import {
 } from './location-resolver.js';
 import { applyHardVeto } from './plan-filter.js';
 import { assembleLanesFromIntent } from './lane-assembler.js';
+import { sanitizeDiscoveryPhrases } from './discovery-phrases.js';
 
 const OPENAI_API = 'https://api.openai.com/v1/chat/completions';
 
@@ -170,35 +171,73 @@ export function resolvePlanRoleTerms(userQuery, aiTerms, avatarDefaults) {
   return defaults.filter((t) => t.length >= 3);
 }
 
-/** Synonyms must relate to the user's role — drop generics and off-career noise. */
-export function resolvePlanRoleSynonyms(userQuery, aiSynonyms, roleTerms) {
+/**
+ * Synonyms: AI expansions for vague roles (tech → software engineer) plus
+ * close title alternatives. Ungrounded AI role_terms become synonyms so
+ * category searches still get real LinkedIn titles.
+ */
+export function resolvePlanRoleSynonyms(userQuery, aiSynonyms, roleTerms, aiRoleTerms = []) {
   const synonyms = normList(aiSynonyms);
   const GENERIC = new Set([
-    'graduate', 'graduates', 'student', 'students', 'intern', 'internship',
+    'graduate', 'graduates', 'grad', 'grads', 'student', 'students', 'intern', 'internship',
     'entry', 'level', 'major', 'majors', 'new', 'recent', 'aspiring',
     'insurance', 'sales', 'finance', 'professional', 'specialist', 'associate',
+    'tech', 'talent', 'people', 'candidates', 'professionals',
   ]);
+  const roleSet = new Set(normList(roleTerms));
+  // Titles AI suggested that grounding dropped from role_terms (e.g. "tech grads"
+  // → "software engineer") — keep them as synonyms so lanes actually search them.
+  const expandedFromAi = normList(aiRoleTerms).filter((t) => {
+    if (roleSet.has(t) || GENERIC.has(t)) return false;
+    if (/\s/.test(t)) return t.length >= 5;
+    return t.length >= 6;
+  });
+
   const roleBlob = [...roleTerms, userQuery].join(' ').toLowerCase();
-  const cleaned = synonyms.filter((s) => {
+  const cleaned = [...synonyms, ...expandedFromAi].filter((s) => {
     if (GENERIC.has(s)) return false;
     if (s.length < 3) return false;
-    // Keep multi-word job titles and distinctive singles.
+    if (roleSet.has(s)) return false;
     if (/\s/.test(s)) return true;
     return s.length >= 5;
   });
 
+  const unique = [...new Set(cleaned)];
+
   // If user asked for a tech role, drop insurance/sales synonym noise.
-  const techish = /software|developer|engineer|cyber|security|data|programmer|coder|fullstack|frontend|backend/i.test(roleBlob);
+  const techish =
+    /software|developer|engineer|cyber|security|data|programmer|coder|fullstack|frontend|backend|\btech\b|\bit\b|\bcs\b/i.test(
+      roleBlob,
+    );
   if (techish) {
-    return cleaned.filter((s) => !/\binsurance\b|\bagent\b|\bproducer\b|\bbroker\b/i.test(s)).slice(0, 8);
+    return unique.filter((s) => !/\binsurance\b|\bagent\b|\bproducer\b|\bbroker\b/i.test(s)).slice(0, 10);
   }
-  return cleaned.slice(0, 8);
+  return unique.slice(0, 10);
 }
 
 function resolveIncludeSignals(userQuery, aiSignals, avatarDefaults) {
   const ai = normList(aiSignals);
   const defaults = normList(avatarDefaults);
   return [...new Set([...defaults, ...ai])];
+}
+
+/** Offline safety net when AI intent is unavailable — category → LinkedIn titles. */
+function fallbackCategorySynonyms(userQuery, avatarType) {
+  const lower = String(userQuery || '').toLowerCase();
+  if (avatarType === 'avatar1') {
+    if (/\btech\b|\bit\b|\bcs\b|computer|software|developer|engineer/.test(lower) && /\b(grad|student|talent|junior|entry)/.test(lower)) {
+      return ['software engineer', 'software developer', 'computer science', 'developer'];
+    }
+    if (/\btech\b/.test(lower) && !/\binsurance|sales|finance|producer|agent/.test(lower)) {
+      return ['software engineer', 'software developer', 'computer science', 'developer'];
+    }
+  }
+  if (avatarType === 'avatar2') {
+    if (/\bproduc/.test(lower) || /\bagents?\b/.test(lower) || /\bbrokers?\b/.test(lower)) {
+      return ['insurance producer', 'insurance agent', 'broker', 'advisor', 'account manager'];
+    }
+  }
+  return [];
 }
 
 /** @deprecated AI lanes are no longer used — kept for import compatibility. */
@@ -244,10 +283,25 @@ function interpretIntentPrompt(userQuery, avatarType, groundedLocation = null) {
         }),
         '- Do not invent a different place. You may ignore location in your JSON (code already has it).',
       ].join('\n')
-    : '# Location: none grounded. Do not invent a location.';
+    : '# Location: none grounded. Leave discovery_phrases empty unless the query itself names a place.';
+
+  const discoveryRules =
+    avatarType === 'avatar1'
+      ? [
+          '- discovery_phrases (avatar1): 3-6 short phrases people in THIS market type on LinkedIn.',
+          '  Prefer the ACRONYMS and short names grads actually write (often WITHOUT the word',
+          '  "university") plus common degree labels for the role. Example STYLE only: local',
+          '  campus acronyms, "BSCS", "computer science" — generate for the grounded location.',
+          '  Do NOT invent obscure names. Empty if no location.',
+        ].join('\n')
+      : [
+          '- discovery_phrases (avatar2): 3-6 short agency-style or local insurance-industry phrases',
+          '  people in THIS market put on LinkedIn (independent agency wording, local carrier/agency',
+          '  style labels, license-adjacent phrases). Not a global mega-brand list. Empty if no location.',
+        ].join('\n');
 
   return [
-    'You resolve a recruiter search into INTENT only (roles + synonyms + signals).',
+    'You resolve a recruiter search into INTENT only (roles + synonyms + signals + discovery phrases).',
     'Do NOT write Google/SerpAPI queries. Output JSON only — no markdown.',
     '',
     `# Avatar: ${rules.label}`,
@@ -261,7 +315,8 @@ function interpretIntentPrompt(userQuery, avatarType, groundedLocation = null) {
     '# Output schema',
     '{',
     '  "role_terms": ["primary roles the user asked for — usually 1-3 phrases"],',
-    '  "role_synonyms": ["close job-title alternatives only — same career family"],',
+    '  "role_synonyms": ["concrete LinkedIn job titles in the same career family"],',
+    '  "discovery_phrases": ["local school/agency phrases for THIS place — see rules"],',
     '  "include_signals": ["optional extra fit phrases beyond avatar defaults"],',
     '  "exclude_titles": ["extra title excludes if needed"],',
     '  "exclude_roles": ["careers that must NOT match this search"],',
@@ -270,9 +325,16 @@ function interpretIntentPrompt(userQuery, avatarType, groundedLocation = null) {
     '',
     '# Rules',
     '- role_terms must reflect the user text (e.g. "software engineer" stays software engineer).',
-    '- role_synonyms: expand carefully (software engineer → software developer, programmer).',
+    '- If the user is VAGUE (e.g. "tech grads", "finance students", "producers"), put CONCRETE',
+    '  LinkedIn titles in role_synonyms (tech → software engineer, software developer, computer science;',
+    '  producers → insurance producer, insurance agent, broker, advisor).',
+    '- Also put common degree / field labels for THAT career into role_synonyms or include_signals',
+    '  when helpful (e.g. nursing → "nursing student", BSN; architecture → "architecture student").',
+    '- role_synonyms: expand carefully; same career family only.',
     '- Do NOT add insurance/sales/finance synonyms unless the user asked for those careers.',
-    '- exclude_roles: list clearly wrong careers for THIS query (e.g. for software engineer: finance, civil engineer, nurse).',
+    discoveryRules,
+    '- discovery_phrases: short plain phrases only — no OR/AND, no site:, no quotes in the string.',
+    '- exclude_roles: list clearly wrong careers for THIS query (e.g. for software engineer: finance, nurse).',
     '- Keep lists short and precise.',
   ].join('\n');
 }
@@ -292,8 +354,10 @@ async function interpretIntentWithOpenAI(userQuery, avatarType, groundedLocation
         {
           role: 'system',
           content:
-            'You output strict JSON search INTENT only: roles, synonyms, signals, excludes, summary. ' +
-            'Never write Google query strings or SerpAPI lanes. Never invent a location.',
+            'You output strict JSON search INTENT only: roles, synonyms, discovery_phrases, signals, excludes, summary. ' +
+            'For vague queries, expand into real LinkedIn job titles in role_synonyms. ' +
+            'discovery_phrases are local market hints for this location only — never Google query strings. ' +
+            'Never invent a location.',
         },
         { role: 'user', content: interpretIntentPrompt(userQuery, avatarType, groundedLocation) },
       ],
@@ -322,7 +386,22 @@ export function normalizePlan(raw, userQuery, avatarType, resolved = {}) {
     raw?.role_terms,
     rules.default_role_terms,
   );
-  const roleSynonyms = resolvePlanRoleSynonyms(userQuery, raw?.role_synonyms, roleTerms);
+  const roleSynonyms = resolvePlanRoleSynonyms(
+    userQuery,
+    raw?.role_synonyms,
+    roleTerms,
+    raw?.role_terms,
+  );
+  const withFallbackSynonyms =
+    roleSynonyms.length > 0
+      ? roleSynonyms
+      : resolvePlanRoleSynonyms(
+          userQuery,
+          fallbackCategorySynonyms(userQuery, avatarType),
+          roleTerms,
+          [],
+        );
+  const discoveryPhrases = sanitizeDiscoveryPhrases(raw?.discovery_phrases);
   const includeSignals = resolveIncludeSignals(userQuery, raw?.include_signals, rules.default_include);
   const excludeTitles = normList([...(rules.default_exclude_titles), ...(raw?.exclude_titles || [])]);
   const excludeRoles = normList([...(rules.default_exclude_roles), ...(raw?.exclude_roles || [])]);
@@ -334,7 +413,8 @@ export function normalizePlan(raw, userQuery, avatarType, resolved = {}) {
     userQuery: String(userQuery ?? '').trim(),
     summary,
     roleTerms,
-    roleSynonyms,
+    roleSynonyms: withFallbackSynonyms,
+    discoveryPhrases,
     location,
     includeSignals,
     excludeTitles,
@@ -398,7 +478,7 @@ export async function buildSearchPlan(userQuery, avatarType, { onLog, uiLocation
 
   if (openaiAvailable()) {
     try {
-      onLog?.('Resolving search intent with AI (roles + synonyms)...');
+      onLog?.('Resolving search intent with AI (roles + synonyms + discovery)...');
       const ai = await interpretIntentWithOpenAI(roleText, avatarType, loc.location);
 
       let location = loc.location;
@@ -419,6 +499,9 @@ export async function buildSearchPlan(userQuery, avatarType, { onLog, uiLocation
       onLog?.(`  roles: ${plan.roleTerms.slice(0, 6).join(', ') || '(defaults)'}`);
       if (plan.roleSynonyms.length) {
         onLog?.(`  synonyms: ${plan.roleSynonyms.slice(0, 8).join(', ')}`);
+      }
+      if (plan.discoveryPhrases?.length) {
+        onLog?.(`  discovery: ${plan.discoveryPhrases.slice(0, 6).join(', ')}`);
       }
       return plan;
     } catch (error) {

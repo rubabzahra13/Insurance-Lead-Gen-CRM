@@ -337,6 +337,7 @@ def persist_avatar12_lead(
     past_experience: str | None,
     location: str | None,
     linkedin_url: str | None,
+    school: str | None = None,
     search_prompt: str | None = None,
     source_snapshot: str | None = None,
     source_query: str | None = None,
@@ -364,6 +365,7 @@ def persist_avatar12_lead(
         lead.headline = headline
         lead.role = role
         lead.company = company
+        lead.school = school
         lead.past_experience = past_experience
         lead.location = location
         lead.search_prompt = search_prompt
@@ -380,6 +382,7 @@ def persist_avatar12_lead(
             headline=headline,
             role=role,
             company=company,
+            school=school,
             past_experience=past_experience,
             location=location,
             linkedin_url=linkedin_url,
@@ -468,6 +471,7 @@ def list_avatar12_leads(*, db: Session, avatar_type: AvatarType | None = None, s
             "headline": lead.headline,
             "role": lead.role,
             "company": lead.company,
+            "school": lead.school,
             "past_experience": lead.past_experience,
             "location": lead.location,
         "linkedin_url": lead.linkedin_url,

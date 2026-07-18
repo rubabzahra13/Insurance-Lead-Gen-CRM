@@ -37,6 +37,7 @@ class AvatarLeadCreate(BaseModel):
     headline: str | None = None
     role: str | None = None
     company: str | None = None
+    school: str | None = None
     past_experience: str | None = None
     location: str | None = None
     linkedin_url: str | None = None
@@ -53,6 +54,7 @@ def _lead_payload(lead: AvatarLead) -> dict:
         "headline": lead.headline,
         "role": lead.role,
         "company": lead.company,
+        "school": lead.school,
         "past_experience": lead.past_experience,
         "location": lead.location,
         "linkedin_url": lead.linkedin_url,
@@ -104,6 +106,7 @@ class AvatarLeadUpdate(BaseModel):
     headline: str | None = None
     role: str | None = None
     company: str | None = None
+    school: str | None = None
     past_experience: str | None = None
     location: str | None = None
     linkedin_url: str | None = None
@@ -127,6 +130,7 @@ def create_lead(payload: AvatarLeadCreate, db: Session = Depends(get_db)):
         headline=payload.headline,
         role=payload.role,
         company=payload.company,
+        school=payload.school,
         past_experience=payload.past_experience,
         location=payload.location,
         linkedin_url=payload.linkedin_url,

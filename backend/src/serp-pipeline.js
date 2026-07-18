@@ -10,6 +10,7 @@ import { verifyLinkedInUrl } from './verify-url.js';
 import { exportAndSyncAvatar12Leads } from './avatar12-export.js';
 import { saveRawSearchResults } from './raw-search.js';
 import { sanitizeLeadFields } from './lead-fields.js';
+import { enrichLeadFields } from './enrich-fields-llm.js';
 import { linkedinSlugFromUrl, mapWithConcurrency, personIdentityKey } from './utils.js';
 import { buildAvatarSearch } from './avatar-prompts.js';
 import { buildSearchPlan, applyPlanCodeFilter } from './search-plan.js';
@@ -55,7 +56,7 @@ async function verifyLeadUrls(leads) {
   return leads.map((lead) => byKey.get(personIdentityKey(lead)) ?? lead);
 }
 
-function applyConfidenceScores(leads) {
+function applyConfidenceScores(leads, avatarType) {
   const collisions = findLinkCollisions(leads);
   const collisionIdentities = new Set(
     collisions.flatMap((group) => group.slice(1).map((lead) => personIdentityKey(lead))),
@@ -65,6 +66,7 @@ function applyConfidenceScores(leads) {
     annotateLeadConfidence(lead, {
       duplicateLink: collisionIdentities.has(personIdentityKey(lead)),
       suspiciousSlug: suspicious.has(personIdentityKey(lead)),
+      avatarType,
     }),
   );
 }
@@ -154,7 +156,14 @@ export async function runSerpLeadPipeline(userQuery, options = {}) {
     // Always run code structuring so a sparse LLM response (often 1 lead) cannot
     // starve the rest of the SERP results. Merge + dedupe afterward.
     const codeLeads = dedupeByPerson(
-      filterValidLeads(structureSerpLeads(rawItems, { avatarType, searchPrompt })),
+      filterValidLeads(
+        structureSerpLeads(rawItems, {
+          avatarType,
+          searchPrompt,
+          roleTerms: plan.roleTerms,
+          roleSynonyms: plan.roleSynonyms,
+        }),
+      ),
     );
 
     const attempts = [];
@@ -195,6 +204,14 @@ export async function runSerpLeadPipeline(userQuery, options = {}) {
   // a job title as a company) silently left the other path broken.
   leads = leads.map(sanitizeLeadFields);
 
+  // Fill the blanks the structurers left. The LLM structurer only returns the
+  // people it judges a match (~10 of 28), so the rest arrive with empty fields;
+  // this reads company/school/location for every lead from the text we already
+  // retrieved, which also handles non-English and acronym school names.
+  leads = await progress.step('AI-reading company, school & experience', () =>
+    enrichLeadFields(leads, { onLog: (msg) => progress.log(msg) }),
+  );
+
   // Infer city from the search plan before hard veto — SERP snippets often omit it.
   leads = fillMissingLocationsFromPlan(leads, plan);
 
@@ -213,7 +230,7 @@ export async function runSerpLeadPipeline(userQuery, options = {}) {
 
   leads = await progress.step('Verifying profiles & scoring', async () => {
     const verified = await verifyLeadUrls(leads);
-    return applyConfidenceScores(verified);
+    return applyConfidenceScores(verified, avatarType);
   });
 
   const ranked = rankLeads(leads);

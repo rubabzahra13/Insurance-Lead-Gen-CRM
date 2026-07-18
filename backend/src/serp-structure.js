@@ -10,9 +10,21 @@ import { cleanCompanyCandidate, cleanPlaceCandidate, looksLikePlace } from './le
 // Job-status phrases are valid headlines but never a company/role.
 const STATUS_RE = /(open to work|#?opentowork|seeking new opportunities|looking for (my next|new|opportunities))/i;
 
-// Avatar 1 = recent graduates. Keep only profiles that actually show a recent-
-// grad signal, so loosely-matched senior people (CEOs, counsel, managers) are
-// dropped. This enforces the avatar in code — no LLM judgement needed.
+const EDUCATION_RE = /\b(university|college|school|institute|academy|polytechnic|campus)\b/i;
+
+const SENIOR_HEADLINE_RE =
+  /\b(senior|staff|principal|director|head of|vp\b|vice president|chief|ceo|cto|cfo|manager)\b/i;
+
+const ROLE_GENERIC = new Set([
+  'graduate', 'graduates', 'grad', 'grads', 'student', 'students', 'intern', 'internship',
+  'entry', 'level', 'major', 'majors', 'new', 'recent', 'aspiring',
+  'tech', 'talent', 'people', 'candidates', 'professionals', 'jobs', 'job',
+  'insurance', 'sales', 'finance',
+]);
+
+// Avatar 1 = recent graduates / early career. Prefer explicit grad signals, but
+// also keep people who match THIS search's roles (from AI) without needing
+// the word "university" — works for any career, any country.
 function isRecentGrad(text) {
   if (!text) return false;
   const years = [0, 1, 2].map((d) => new Date().getFullYear() - d);
@@ -23,6 +35,45 @@ function isRecentGrad(text) {
   );
 }
 
+/** Light, career-agnostic education wording (not a school-name list). */
+function hasLightEducationSignal(text) {
+  if (!text) return false;
+  if (isRecentGrad(text)) return true;
+  if (/\b(graduated from|studying at|student at|alumni of|alumnus|alumna|bachelor)\b/i.test(text)) {
+    return true;
+  }
+  return EDUCATION_RE.test(text);
+}
+
+/**
+ * Does this profile text match the roles AI resolved for THIS search?
+ * Dynamic: nursing search → nurse titles; tech search → engineer titles; etc.
+ */
+function matchesSearchRoles(text, roleTerms = [], roleSynonyms = []) {
+  const lower = String(text || '').toLowerCase();
+  if (!lower.trim()) return false;
+
+  const terms = [...roleTerms, ...roleSynonyms]
+    .map((t) => String(t || '').toLowerCase().trim())
+    .filter((t) => t.length >= 3 && !ROLE_GENERIC.has(t))
+    .sort((a, b) => b.length - a.length);
+
+  for (const term of terms) {
+    if (lower.includes(term)) return true;
+    const words = term.split(/\s+/).filter((w) => w.length >= 3 && !ROLE_GENERIC.has(w));
+    if (words.length >= 2 && words.every((w) => lower.includes(w))) return true;
+  }
+  return false;
+}
+
+/** Keep non-senior profiles that fit this search's role intent. */
+function matchesSearchAsJunior(text, roleTerms, roleSynonyms) {
+  if (!text) return false;
+  if (SENIOR_HEADLINE_RE.test(text)) return false;
+  if (OWNER_RE.test(text)) return false;
+  return matchesSearchRoles(text, roleTerms, roleSynonyms);
+}
+
 // Avatar 2 = STAFF at small firms / upskillers — never the person who runs the
 // business. An owner wanting to grow their own company is the wrong lead, so
 // drop them in code too (not only via the LLM prompt).
@@ -31,8 +82,6 @@ const OWNER_RE = /\b(ceo|chief executive|founder|co-?founder|owner|proprietor|pr
 function isOwner(text) {
   return Boolean(text) && OWNER_RE.test(text);
 }
-
-const EDUCATION_RE = /\b(university|college|school|institute|academy)\b/i;
 
 /**
  * LinkedIn's own profile card, passed through by Google as rich-snippet
@@ -63,23 +112,26 @@ function factsFromExtensions(extensions) {
 }
 
 /**
- * Employer named as "… at <Company>", stopping at the next clause boundary.
- *
- * Two traps: "University of Nebraska at Omaha" — where the "at" belongs to the
- * school's own name — and education institutions, which are not the employer we
- * want in a CRM's Company field for a graduate.
+ * Light optional headline hint: "Intern at Acme". Odd / Experience layouts are
+ * left to enrichLeadFields (AI) so we do not hardcode every Google snippet shape.
  */
 function matchCompanyAfterAt(text) {
   const source = String(text ?? '');
-  const pattern = /\bat\s+([A-Z][^|·•]*)/g;
+  const pattern = /\bat\s+([A-Z][^|·•.]{1,60})/g;
 
   for (const match of source.matchAll(pattern)) {
     const before = source.slice(0, match.index);
-    if (EDUCATION_RE.test(before.split(/[|·•]/).pop() ?? '')) continue;
+    const tail = before.slice(-48);
+    if (EDUCATION_RE.test(tail.split(/[|·•]/).pop() ?? '')) continue;
+    if (/\b(student|studying|alumni|alumnus|alumna|undergraduate)\s+$/i.test(tail)) continue;
 
-    const candidate = match[1].split(/\s+[-–—]\s+/)[0].trim();
-    if (EDUCATION_RE.test(candidate)) continue;
-    return candidate;
+    const candidate = String(match[1])
+      .split(/\s+[-–—]\s+/)[0]
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!candidate || EDUCATION_RE.test(candidate)) continue;
+    const cleaned = cleanCompanyCandidate(candidate);
+    if (cleaned) return cleaned;
   }
 
   return null;
@@ -124,9 +176,11 @@ function extractName(title) {
 function locationFromSnippet(snippet) {
   if (!snippet) return null;
 
-  // 1) The segment just before "N followers" / "N connections".
+  // 1) The segment just before the follower/connection count. Google often cuts
+  // the snippet mid-count ("Accra, Greater Accra Region, Ghana. 261 ..."), so the
+  // trailing word is optional — requiring it lost every truncated result.
   const beforeCount = snippet.match(
-    /(?:^|[.·])\s*([^.·]{3,60}?)\s*[.·]\s*[\d,.]+\+?\s*(?:followers|connections)\b/i,
+    /(?:^|[.·])\s*([^.·]{3,60}?)\s*[.·]\s*[\d,.]+\+?\s*(?:followers|connections|\.\.\.|…|$)/i,
   );
   if (beforeCount && looksLikePlace(beforeCount[1])) return cleanPlaceCandidate(beforeCount[1]);
 
@@ -141,7 +195,7 @@ function locationFromSnippet(snippet) {
   return null;
 }
 
-export function structureSerpLeads(rawItems, { avatarType, searchPrompt } = {}) {
+export function structureSerpLeads(rawItems, { avatarType, searchPrompt, roleTerms = [], roleSynonyms = [] } = {}) {
   const profiles = rawItems.filter((item) => item.title && item.title !== 'model_research_notes');
   const byName = new Map();
   const locationHint = extractQueryLocation(searchPrompt);
@@ -150,14 +204,19 @@ export function structureSerpLeads(rawItems, { avatarType, searchPrompt } = {}) 
     const name = extractName(item.title);
     if (!name) continue;
 
-    // Avatar 1: drop anyone without a recent-graduate signal. Check the HEADLINE
-    // only (title + the start of the snippet before the Experience/Education
-    // dump) — a grad's headline says "Student"/"Class of 2026", a senior person's
-    // says "Chief Executive"/"Counsel". Checking the full text let seniors slip in
-    // via stray words in their history.
+    // Avatar 1: recent-grad wording, light education signal, OR match to THIS
+    // search's AI role terms (dynamic — not a fixed software-title list).
     if (avatarType === 'avatar1') {
       const headline = `${item.title} ${(item.snippet || '').split(/[·;|]\s*(Experience|Education)/i)[0]}`;
-      if (!isRecentGrad(headline)) continue;
+      const early = `${item.title} ${String(item.snippet || '').slice(0, 320)}`;
+      if (
+        !isRecentGrad(headline)
+        && !hasLightEducationSignal(early)
+        && !matchesSearchAsJunior(headline, roleTerms, roleSynonyms)
+        && !matchesSearchAsJunior(early, roleTerms, roleSynonyms)
+      ) {
+        continue;
+      }
     }
 
     // Avatar 2: drop owners/founders/CEOs — we want the staff, not the boss.
@@ -187,14 +246,13 @@ export function structureSerpLeads(rawItems, { avatarType, searchPrompt } = {}) 
     // we can infer from the snippet prose.
     const facts = factsFromExtensions(item.extensions);
 
-    // Company: the card first, then an explicit "at <Company>" — never a
-    // positional guess, which turns "Aspiring Financial Advisor" or "Class of
-    // 2026" into an employer. Google truncates long titles ("at Equitable ..."),
-    // so fall back to the snippet, which usually repeats the headline in full.
+    // Company: LinkedIn card first, then a light "at Company" headline hint.
+    // School / internship / odd layouts → enrichLeadFields (AI), any structure.
     const company =
       facts.company
-      || cleanCompanyCandidate(matchCompanyAfterAt(headline))
-      || cleanCompanyCandidate(matchCompanyAfterAt(item.snippet));
+      || matchCompanyAfterAt(headline)
+      || matchCompanyAfterAt(item.snippet)
+      || null;
 
     const snippet = item.snippet || '';
     // The lane note was folded into the snippet as "[...]" by serpResultsToRawItems.
@@ -210,6 +268,7 @@ export function structureSerpLeads(rawItems, { avatarType, searchPrompt } = {}) 
       name,
       title: titleClause || facts.role || null,
       company,
+      school: null,
       location: facts.location || locationFromSnippet(cleanSnippet),
       // Fields taken from LinkedIn's card are verified; anything inferred from
       // snippet prose stays flagged as weak so the CRM never shows a guess as fact.

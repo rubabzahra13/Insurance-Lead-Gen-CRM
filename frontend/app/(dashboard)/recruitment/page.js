@@ -6,6 +6,7 @@ import { LEAD_SEGMENTS, useIndividualSegment } from '../../../context/Individual
 import { COLORS, GRADIENT, RGBA } from '../../../lib/colors';
 import IndividualSearchPanel from '../../../components/IndividualSearchPanel';
 import DotScrollArea from '../../../components/DotScrollArea';
+import SearchableFilterSelect from '../../../components/SearchableFilterSelect';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   API_CACHE_KEYS,
@@ -107,6 +108,128 @@ function isMissingField(value) {
   return !String(value || '').trim();
 }
 
+/** Prefer a clean employer; never show LinkedIn Experience dumps as company. */
+function displayCompanyOrExperience(lead) {
+  const company = String(lead?.company || '').trim();
+  if (company && company.length <= 60 && !/\b(present|years?|months?|sep|oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug)\b/i.test(company) && (company.match(/\./g) || []).length < 2) {
+    return company;
+  }
+  const experience = String(lead?.past_experience || '').trim();
+  if (experience && experience.length <= 80 && (experience.match(/\./g) || []).length < 2) {
+    return experience;
+  }
+  return 'Add company';
+}
+
+function isCompanyOrExperienceMissing(lead) {
+  const shown = displayCompanyOrExperience(lead);
+  return shown === 'Add company';
+}
+
+// Query-only filter options (role/location typed when running a search).
+// v2 keys abandon the old lead-title backfill lists.
+const FILTER_ROLES_KEY = 'insurelead-draft-filter-roles-query-v2';
+const FILTER_LOCATIONS_KEY = 'insurelead-draft-filter-locations-query-v2';
+const FILTER_RECENT_ROLES_KEY = 'insurelead-draft-filter-recent-roles-query-v2';
+const FILTER_RECENT_LOCATIONS_KEY = 'insurelead-draft-filter-recent-locations-query-v2';
+const LEGACY_FILTER_KEYS = [
+  'insurelead-draft-filter-roles',
+  'insurelead-draft-filter-locations',
+  'insurelead-draft-filter-recent-roles',
+  'insurelead-draft-filter-recent-locations',
+];
+const MAX_RECENT_FILTERS = 8;
+
+function loadFilterOptions(key) {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(key);
+    const parsed = JSON.parse(raw || '[]');
+    return Array.isArray(parsed)
+      ? parsed.map((v) => String(v || '').trim()).filter(Boolean)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveFilterOptions(key, options) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(options));
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+function clearLegacyFilterStorage() {
+  if (typeof window === 'undefined') return;
+  try {
+    LEGACY_FILTER_KEYS.forEach((key) => window.localStorage.removeItem(key));
+  } catch {
+    // ignore
+  }
+}
+
+/** Keep search-query role/location as the user typed them (light cleanup only). */
+function normalizeRoleOption(value) {
+  const text = String(value || '').trim().replace(/\s+/g, ' ');
+  if (text.length < 2 || text.length > 80) return '';
+  if (/^add /i.test(text)) return '';
+  return text;
+}
+
+function normalizeLocationOption(value) {
+  const text = String(value || '').trim().replace(/\s+/g, ' ');
+  if (text.length < 2 || text.length > 80) return '';
+  if (/^add /i.test(text)) return '';
+  return text;
+}
+
+function addUniqueOption(options, value, normalizer = (v) => String(v || '').trim()) {
+  const next = normalizer(value);
+  if (!next) return options;
+  if (options.some((item) => item.toLowerCase() === next.toLowerCase())) return options;
+  return [...options, next].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+function pushRecentOption(recents, value, normalizer) {
+  const nextValue = normalizer(value);
+  if (!nextValue) return recents;
+  const without = recents.filter((item) => item.toLowerCase() !== nextValue.toLowerCase());
+  return [nextValue, ...without].slice(0, MAX_RECENT_FILTERS);
+}
+
+function leadMatchesRoleFilter(lead, roleFilter) {
+  if (!roleFilter || roleFilter === 'all') return true;
+  const needle = roleFilter.toLowerCase();
+  const haystack = [
+    lead.role,
+    lead.headline,
+    lead.search_prompt,
+    lead.source_query,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return haystack.includes(needle);
+}
+
+function leadMatchesLocationFilter(lead, locationFilter) {
+  if (!locationFilter || locationFilter === 'all') return true;
+  const needle = locationFilter.toLowerCase();
+  const location = String(lead.location || '').toLowerCase();
+  if (location && location.includes(needle.split(',')[0].trim())) return true;
+  const haystack = [lead.location, lead.source_query, lead.search_prompt]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return haystack.includes(needle) || needle.split(',').some((part) => {
+    const token = part.trim();
+    return token.length >= 3 && haystack.includes(token);
+  });
+}
+
 function formatLeadInsight(text) {
   return stripEmDashes(text);
 }
@@ -204,12 +327,58 @@ function RecruitmentWorkspaceContent() {
   // Filters state
   const [textSearch, setTextSearch] = useState(urlQuery);
   const [statusFilter, setStatusFilter] = useState('all'); // 'all' | 'draft' | 'sent' | 'failed'
+  const [roleFilter, setRoleFilter] = useState('all');
+  const [locationFilter, setLocationFilter] = useState('all');
+  const [roleOptions, setRoleOptions] = useState([]);
+  const [locationOptions, setLocationOptions] = useState([]);
+  const [recentRoles, setRecentRoles] = useState([]);
+  const [recentLocations, setRecentLocations] = useState([]);
   const [sortBy, setSortBy] = useState('newest');
   const urlView = searchParams.get('view');
   const [workspaceSection, setWorkspaceSection] = useState(
     urlView === 'source' || urlView === 'analytics' ? urlView : 'leads'
   ); // source | leads | analytics
   const [listFiltersOpen, setListFiltersOpen] = useState(false);
+
+  useEffect(() => {
+    clearLegacyFilterStorage();
+    setRoleOptions(loadFilterOptions(FILTER_ROLES_KEY).map(normalizeRoleOption).filter(Boolean));
+    setLocationOptions(loadFilterOptions(FILTER_LOCATIONS_KEY).map(normalizeLocationOption).filter(Boolean));
+    setRecentRoles(loadFilterOptions(FILTER_RECENT_ROLES_KEY).map(normalizeRoleOption).filter(Boolean).slice(0, MAX_RECENT_FILTERS));
+    setRecentLocations(loadFilterOptions(FILTER_RECENT_LOCATIONS_KEY).map(normalizeLocationOption).filter(Boolean).slice(0, MAX_RECENT_FILTERS));
+  }, []);
+
+  const rememberRoleOption = useCallback((value) => {
+    const normalized = normalizeRoleOption(value);
+    if (!normalized) return normalized;
+    setRoleOptions((prev) => {
+      const next = addUniqueOption(prev, normalized, normalizeRoleOption);
+      if (next !== prev) saveFilterOptions(FILTER_ROLES_KEY, next);
+      return next;
+    });
+    setRecentRoles((prev) => {
+      const next = pushRecentOption(prev, normalized, normalizeRoleOption);
+      if (next !== prev) saveFilterOptions(FILTER_RECENT_ROLES_KEY, next);
+      return next;
+    });
+    return normalized;
+  }, []);
+
+  const rememberLocationOption = useCallback((value) => {
+    const normalized = normalizeLocationOption(value);
+    if (!normalized) return normalized;
+    setLocationOptions((prev) => {
+      const next = addUniqueOption(prev, normalized, normalizeLocationOption);
+      if (next !== prev) saveFilterOptions(FILTER_LOCATIONS_KEY, next);
+      return next;
+    });
+    setRecentLocations((prev) => {
+      const next = pushRecentOption(prev, normalized, normalizeLocationOption);
+      if (next !== prev) saveFilterOptions(FILTER_RECENT_LOCATIONS_KEY, next);
+      return next;
+    });
+    return normalized;
+  }, []);
 
   // The leads the most recent search returned, as { query, keys:Set, count }.
   // Needed because a person we already had is UPDATED rather than inserted, so
@@ -234,106 +403,8 @@ function RecruitmentWorkspaceContent() {
   const [editForm, setEditForm] = useState(null);
   const [savingLead, setSavingLead] = useState(false);
   const openEditAfterLoadRef = useRef(false);
-
-  // Show Toast Helper
-  const showToast = (message, type = 'success') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
-  };
-
-  // Pre-fill text search from URL if present
-  useEffect(() => {
-    if (urlQuery && !textSearch) {
-      setTextSearch(urlQuery);
-    }
-  }, [urlQuery]);
-
-  // Fetch leads
-  const fetchLeads = async ({ force = false } = {}) => {
-    if (!force) {
-      const cached = getApiCache(API_CACHE_KEYS.avatar12Leads);
-      if (cached) {
-        const items = Array.isArray(cached) ? cached : (cached.items || []);
-        setLeads(withFunnelTestLead(items));
-        setLoading(false);
-        void fetchLeads({ force: true });
-        return;
-      }
-    }
-
-    // Keep existing rows visible during background refresh
-    if (!force) setLoading(true);
-    setError(false);
-    try {
-      const apiBaseUrl = getApiBaseUrl();
-      const controller = new AbortController();
-      const timeoutId = window.setTimeout(() => controller.abort(), 15000);
-      let data;
-      try {
-        const res = await fetch(`${apiBaseUrl}/api/avatar12/leads`, {
-          signal: controller.signal,
-        });
-        if (!res.ok) throw new Error(`Request failed (${res.status})`);
-        data = await res.json();
-      } finally {
-        window.clearTimeout(timeoutId);
-      }
-      const items = withFunnelTestLead(Array.isArray(data) ? data : (data.items || []));
-      setLeads(items);
-      setApiCache(API_CACHE_KEYS.avatar12Leads, { items });
-    } catch (err) {
-      console.error(err);
-      setLeads((prev) => withFunnelTestLead(prev));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Fetch funnel statistics
-  const fetchFunnelData = async ({ force = false } = {}) => {
-    if (!force) {
-      const cached = getApiCache(API_CACHE_KEYS.funnel);
-      if (cached) {
-        setFunnelData({
-          chart: cached.chart || [],
-          items: cached.items || [],
-        });
-        setFunnelLoading(false);
-        void fetchFunnelData({ force: true });
-        return;
-      }
-    }
-    if (!force) setFunnelLoading(true);
-    setFunnelError(false);
-    try {
-      const apiBaseUrl = getApiBaseUrl();
-      const { data } = await fetchCachedJson(`${apiBaseUrl}/api/dashboard/funnel`, {
-        cacheKey: API_CACHE_KEYS.funnel,
-        force: true,
-      });
-      setFunnelData({
-        chart: data.chart || [],
-        items: data.items || [],
-      });
-    } catch (err) {
-      console.error(err);
-      setFunnelError(true);
-    } finally {
-      setFunnelLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchLeads();
-    fetchFunnelData();
-  }, []);
-
-  useEffect(() => {
-    setSegmentCounts({
-      avatar1: leads.filter((lead) => lead.avatar_type === 'avatar1').length,
-      avatar2: leads.filter((lead) => lead.avatar_type === 'avatar2').length,
-    });
-  }, [leads, setSegmentCounts]);
+  /** In-session cache of full lead detail payloads for fast revisit. */
+  const leadDetailCacheRef = useRef(new Map());
 
   // Fetch selected lead details & latest draft when selectedLeadId changes
   useEffect(() => {
@@ -348,8 +419,10 @@ function RecruitmentWorkspaceContent() {
       return;
     }
 
+    let cancelled = false;
+    const leadId = selectedLeadId;
+
     const loadRightPaneData = async () => {
-      setRightLoading(true);
       setRightError(false);
       setNoDraftExists(false);
       setActiveTab('profile');
@@ -357,14 +430,31 @@ function RecruitmentWorkspaceContent() {
       setEditingLead(false);
       setEditForm(null);
 
+      const cached = leadDetailCacheRef.current.get(leadId);
+      const listRow = leads.find((item) => String(item.id) === String(leadId));
+      if (cached) {
+        setSelectedLeadDetails(cached);
+        setRightLoading(false);
+      } else if (listRow) {
+        setSelectedLeadDetails(listRow);
+        setRightLoading(true);
+      } else {
+        setSelectedLeadDetails(null);
+        setRightLoading(true);
+      }
+
       try {
         const apiBaseUrl = getApiBaseUrl();
-        
-        // 1. Fetch Lead Details
-        const leadRes = await fetch(`${apiBaseUrl}/api/avatar12/leads/${selectedLeadId}`);
+
+        const leadRes = await fetch(`${apiBaseUrl}/api/avatar12/leads/${leadId}`);
         if (!leadRes.ok) throw new Error('Failed to fetch lead details');
         const leadData = await leadRes.json();
+        if (cancelled) return;
+
+        leadDetailCacheRef.current.set(leadId, leadData);
         setSelectedLeadDetails(leadData);
+        setRightLoading(false);
+
         if (openEditAfterLoadRef.current) {
           openEditAfterLoadRef.current = false;
           setEditForm({
@@ -378,15 +468,14 @@ function RecruitmentWorkspaceContent() {
           setEditingLead(true);
         }
 
-        // 2. Fetch Latest Draft
-        const draftRes = await fetch(`${apiBaseUrl}/api/avatar12/leads/${selectedLeadId}/drafts/latest`);
-        
+        const draftRes = await fetch(`${apiBaseUrl}/api/avatar12/leads/${leadId}/drafts/latest`);
+        if (cancelled) return;
+
         if (draftRes.ok) {
           const draftData = await draftRes.json();
           setDraftMessage(stripEmDashes(draftData.message || ''));
           setDraftReasoning(draftData.reasoning || '');
         } else if (draftRes.status === 404) {
-          // If latest drafts endpoint 404s, fall back to check drafts list in lead detail
           const draftsList = leadData.drafts || [];
           if (draftsList.length > 0) {
             const latest = draftsList[draftsList.length - 1];
@@ -402,13 +491,17 @@ function RecruitmentWorkspaceContent() {
         }
       } catch (err) {
         console.error(err);
-        setRightError(true);
+        if (!cancelled) setRightError(true);
       } finally {
-        setRightLoading(false);
+        if (!cancelled) setRightLoading(false);
       }
     };
 
     loadRightPaneData();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedLeadId]);
 
   useEffect(() => {
@@ -475,6 +568,10 @@ function RecruitmentWorkspaceContent() {
       if (!res.ok) throw new Error(`Save failed (${res.status})`);
       const updated = await res.json();
       setSelectedLeadDetails((prev) => (prev ? { ...prev, ...updated } : updated));
+      leadDetailCacheRef.current.set(selectedLeadId, {
+        ...(leadDetailCacheRef.current.get(selectedLeadId) || {}),
+        ...updated,
+      });
       setLeads((prev) =>
         prev.map((lead) => (lead.id === selectedLeadId ? { ...lead, ...updated } : lead)),
       );
@@ -531,6 +628,8 @@ function RecruitmentWorkspaceContent() {
   const handleResetFilters = () => {
     setTextSearch('');
     setStatusFilter('all');
+    setRoleFilter('all');
+    setLocationFilter('all');
     setSortBy('newest');
     
     const params = new URLSearchParams(searchParams.toString());
@@ -706,6 +805,14 @@ function RecruitmentWorkspaceContent() {
         return false;
       }
 
+      if (!leadMatchesRoleFilter(lead, roleFilter)) {
+        return false;
+      }
+
+      if (!leadMatchesLocationFilter(lead, locationFilter)) {
+        return false;
+      }
+
       if (onlyThisSearch && !isFromSearchRun(lead)) {
         return false;
       }
@@ -745,7 +852,7 @@ function RecruitmentWorkspaceContent() {
     });
 
     return sorted;
-  }, [leads, textSearch, leadSegment, statusFilter, sortBy, onlyThisSearch, isFromSearchRun]);
+  }, [leads, textSearch, leadSegment, statusFilter, roleFilter, locationFilter, sortBy, onlyThisSearch, isFromSearchRun]);
 
   // Calculate aggregate funnel metrics for the active segment
   const aggregateItems = funnelData.items.filter((item) => item.avatar_type === leadSegment);
@@ -761,6 +868,8 @@ function RecruitmentWorkspaceContent() {
   const activeFilterCount = [
     textSearch,
     statusFilter !== 'all' ? statusFilter : '',
+    roleFilter !== 'all' ? roleFilter : '',
+    locationFilter !== 'all' ? locationFilter : '',
   ].filter(Boolean).length;
 
   const activeSegmentMeta = LEAD_SEGMENTS.find((segment) => segment.id === leadSegment) || LEAD_SEGMENTS[0];
@@ -997,6 +1106,19 @@ function RecruitmentWorkspaceContent() {
               setOnlyThisSearch(keys.size > 0);
               setTextSearch('');
               setStatusFilter('all');
+              if (run?.role) {
+                const role = rememberRoleOption(run.role);
+                setRoleFilter(role || 'all');
+              } else {
+                setRoleFilter('all');
+              }
+              if (run?.location) {
+                const location = rememberLocationOption(run.location);
+                setLocationFilter(location || 'all');
+              } else {
+                setLocationFilter('all');
+              }
+              setListFiltersOpen(true);
               invalidateApiCache([API_CACHE_KEYS.avatar12Leads, API_CACHE_KEYS.funnel]);
               fetchLeads({ force: true });
               fetchFunnelData({ force: true });
@@ -1141,46 +1263,68 @@ function RecruitmentWorkspaceContent() {
 
           {listFiltersOpen && (
           <div className="individual-list-filters-panel">
-          {/* Status Filter Selector */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 500 }}>Status:</span>
-            <div style={{ display: 'flex', background: RGBA.neutral06, borderRadius: '8px', padding: '2px', border: '1px solid var(--border-color)' }}>
-              {['draft', 'sent'].map((status) => (
-                <button
-                  key={status}
-                  onClick={() => setStatusFilter(status)}
-                  style={{
-                    background: statusFilter === status ? '#ffffff' : 'transparent',
-                    border: statusFilter === status ? '1px solid var(--border-color)' : '1px solid transparent',
-                    borderRadius: '6px',
-                    color: statusFilter === status ? COLORS.oldRose : 'var(--text-secondary)',
-                    padding: '4px 10px',
-                    fontSize: '0.7rem',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    textTransform: 'capitalize'
-                  }}
+            <div className="individual-list-filters-grid">
+              <label className="individual-list-filter-field">
+                <span>Status</span>
+                <select
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                  aria-label="Filter by status"
                 >
-                  {status === 'sent' ? 'Sent' : 'Draft'}
-                </button>
-              ))}
-            </div>
-          </div>
+                  <option value="all">All statuses</option>
+                  <option value="draft">Draft</option>
+                  <option value="sent">Sent</option>
+                </select>
+              </label>
 
-          {/* Filter stats & clear option */}
-          {(textSearch || statusFilter !== 'all' || sortBy !== 'newest') && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              <span>Filtered: {filteredLeads.length} of {leads.length} drafts</span>
-              <button 
-                type="button"
-                onClick={handleResetFilters}
-                style={{ background: 'none', border: 'none', color: COLORS.oldRose, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', padding: 0 }}
-              >
-                <RotateCcw size={12} />
-                Reset Filters
-              </button>
+              <SearchableFilterSelect
+                label="Role"
+                value={roleFilter}
+                options={roleOptions}
+                recentOptions={recentRoles}
+                allLabel="All roles"
+                searchPlaceholder="Type a role…"
+                emptyLabel="No roles match that search"
+                onChange={(next) => {
+                  setRoleFilter(next);
+                  if (next !== 'all') rememberRoleOption(next);
+                }}
+              />
+
+              <SearchableFilterSelect
+                label="Location"
+                value={locationFilter}
+                options={locationOptions}
+                recentOptions={recentLocations}
+                allLabel="All locations"
+                searchPlaceholder="Type a city or region…"
+                emptyLabel="No locations match that search"
+                onChange={(next) => {
+                  setLocationFilter(next);
+                  if (next !== 'all') rememberLocationOption(next);
+                }}
+              />
             </div>
-          )}
+
+            {(roleOptions.length === 0 && locationOptions.length === 0) && (
+              <p className="individual-list-filters-hint">
+                Role and location options appear from the role and location you type when you run a search.
+              </p>
+            )}
+
+            {(textSearch || statusFilter !== 'all' || roleFilter !== 'all' || locationFilter !== 'all' || sortBy !== 'newest') && (
+              <div className="individual-list-filters-footer">
+                <span>Filtered: {filteredLeads.length} of {leads.filter((l) => l.avatar_type === leadSegment).length} drafts</span>
+                <button
+                  type="button"
+                  onClick={handleResetFilters}
+                  className="individual-list-filters-reset"
+                >
+                  <RotateCcw size={12} />
+                  Reset Filters
+                </button>
+              </div>
+            )}
           </div>
           )}
         </div>
@@ -1227,7 +1371,7 @@ function RecruitmentWorkspaceContent() {
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', lineHeight: '1.4', maxWidth: '280px' }}>
                   {leads.length === 0 || !leads.some((l) => l.avatar_type === leadSegment)
                     ? `Head to Find New Leads to search for ${activeSegmentMeta.label.toLowerCase()}. New matches will appear here as drafts ready to review and send.`
-                    : 'Try clearing search or status filters.'}
+                    : 'Try clearing search or filters.'}
                 </p>
               </div>
               {(leads.length === 0 || !leads.some((l) => l.avatar_type === leadSegment)) && (
@@ -1243,7 +1387,7 @@ function RecruitmentWorkspaceContent() {
                 const isActive = lead.id === selectedLeadId;
                 const draftStatus = lead.latest_draft?.status || 'draft';
                 const fromThisSearch = isFromSearchRun(lead);
-                const companyMissing = isMissingField(lead.company);
+                const companyMissing = isCompanyOrExperienceMissing(lead);
                 const locationMissing = isMissingField(lead.location);
                 const subtitle = stripEmDashes(lead.headline || lead.role || '').trim();
 
@@ -1286,7 +1430,7 @@ function RecruitmentWorkspaceContent() {
                     <div className="outreach-lead-card__meta">
                       <span className={companyMissing ? 'is-missing' : ''}>
                         <Building2 size={10} aria-hidden="true" />
-                        {displayField(lead.company, 'company')}
+                        {displayCompanyOrExperience(lead)}
                       </span>
                       <span className={locationMissing ? 'is-missing' : ''}>
                         <MapPin size={10} aria-hidden="true" />
@@ -1445,10 +1589,24 @@ function RecruitmentWorkspaceContent() {
                       <dl className="individual-lead-profile__facts">
                         <div className="individual-lead-profile__fact">
                           <dt>Company</dt>
-                          <dd className={isMissingField(selectedLeadDetails.company) ? 'is-missing' : undefined}>
-                            {displayField(selectedLeadDetails.company, 'company')}
+                          <dd className={isCompanyOrExperienceMissing(selectedLeadDetails) ? 'is-missing' : undefined}>
+                            {displayCompanyOrExperience(selectedLeadDetails)}
                           </dd>
                         </div>
+                        {/* Shown only when present: most job seekers are students
+                            with no employer, and an intern legitimately has both. */}
+                        {selectedLeadDetails.school && (
+                          <div className="individual-lead-profile__fact">
+                            <dt>School</dt>
+                            <dd>{stripEmDashes(selectedLeadDetails.school)}</dd>
+                          </div>
+                        )}
+                        {selectedLeadDetails.past_experience && selectedLeadDetails.company && (
+                          <div className="individual-lead-profile__fact individual-lead-profile__fact--wide">
+                            <dt>Experience</dt>
+                            <dd>{stripEmDashes(selectedLeadDetails.past_experience)}</dd>
+                          </div>
+                        )}
                         <div className="individual-lead-profile__fact">
                           <dt>Location</dt>
                           <dd className={isMissingField(selectedLeadDetails.location) ? 'is-missing' : undefined}>

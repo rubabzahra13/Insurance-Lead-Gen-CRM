@@ -156,7 +156,7 @@ function BusinessWorkspaceContent() {
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleDeleteLead(lead);
+                          requestDeleteLead(lead.id, lead.business_name);
                         }}
                         className="pipeline-card__delete-btn"
                         title="Remove lead"
@@ -728,38 +728,6 @@ function BusinessWorkspaceContent() {
     }
   };
 
-  const handleDeleteLead = async (lead) => {
-    const confirmDelete = window.confirm(`Remove ${lead.business_name} from the pipeline? This can't be undone.`);
-    if (!confirmDelete) return;
-
-    // Optimistic UI updates
-    const previousLeads = [...leads];
-    setLeads(prev => prev.filter(l => l.id !== lead.id));
-    
-    // Close the slide-over cleanly if this lead is currently open
-    if (selectedLeadId === lead.id) {
-      handleSelectLead(null);
-    }
-
-    try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
-      const deleteRes = await fetch(`${apiBaseUrl}/api/avatar3/leads/${lead.id}`, {
-        method: 'DELETE'
-      });
-
-      if (!deleteRes.ok) {
-        throw new Error('Deletion rejected by server');
-      }
-
-      showToast(`Lead ${lead.business_name} removed from the pipeline.`);
-    } catch (err) {
-      console.error(err);
-      // Revert in-memory changes
-      setLeads(previousLeads);
-      showToast(`Failed to remove lead: ${err.message || 'unknown error'}`, 'error');
-    }
-  };
-
   const handleDrop = (e, toStage) => {
     e.preventDefault();
     e.stopPropagation();
@@ -1165,7 +1133,7 @@ function BusinessWorkspaceContent() {
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleDeleteLead(lead);
+                                  requestDeleteLead(lead.id, lead.business_name);
                                 }}
                                 className="pipeline-card__delete-btn"
                                 title="Remove lead"

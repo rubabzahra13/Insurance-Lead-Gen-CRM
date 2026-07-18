@@ -1,5 +1,7 @@
 // Assemble SerpAPI lanes from structured search intent.
-// Google Boolean syntax is built in code — AI only supplies role/synonym/signal intent.
+// Google Boolean is built in code — AI supplies roles, synonyms, and discovery phrases.
+
+import { buildDiscoveryClause } from './discovery-phrases.js';
 
 function recentGradYears() {
   const year = new Date().getFullYear();
@@ -13,9 +15,9 @@ function classOfTerms() {
 const GRAD_TERMS =
   '("recent graduate" OR "new grad" OR "recent grad" OR aspiring OR "entry level" OR "entry-level")';
 const INTERN_TERMS = '(intern OR internship OR "summer analyst")';
-
-const OWNER_EXCLUDES =
-  '-CEO -founder -"co-founder" -owner -proprietor -"managing director" -partner -principal';
+/** Universal early-career wording — career-agnostic; role terms come from AI. */
+const EDUCATION_TERMS =
+  '(student OR undergraduate OR bachelor OR alumni OR "graduated from" OR university OR institute OR college OR polytechnic)';
 
 function quoteTerm(term) {
   const t = String(term || '').trim();
@@ -25,9 +27,11 @@ function quoteTerm(term) {
 
 /** Build OR-group from role terms + synonyms (longest / most specific first). */
 export function buildRoleClause(roleTerms = [], roleSynonyms = [], { maxTerms = 8 } = {}) {
+  // Bare category words flood Google; prefer AI-expanded titles (software engineer…).
   const GENERIC = new Set([
-    'graduate', 'graduates', 'student', 'students', 'intern', 'internship',
+    'graduate', 'graduates', 'grad', 'grads', 'student', 'students', 'intern', 'internship',
     'entry', 'level', 'major', 'majors', 'new', 'recent', 'aspiring',
+    'tech', 'talent', 'people', 'candidates', 'professionals', 'jobs', 'job',
   ]);
   const merged = [...roleTerms, ...roleSynonyms]
     .map((t) => String(t || '').toLowerCase().trim())
@@ -67,7 +71,8 @@ function locationPhrase(location) {
 }
 
 /**
- * Build 3 parallel SerpAPI lanes from avatar + resolved intent.
+ * Build parallel SerpAPI lanes from avatar + resolved intent.
+ * Discovery lane (optional): AI phrases for THIS market — not a hardcoded list.
  * @returns {{ lanes: Array<{query,num,note}>, source: 'assembled' }}
  */
 export function assembleLanesFromIntent(avatarType, plan) {
@@ -75,6 +80,7 @@ export function assembleLanesFromIntent(avatarType, plan) {
   const loc = locationPhrase(plan.location);
   const locPart = loc ? ` ${loc}` : '';
   const rolePart = roleClause ? ` ${roleClause}` : '';
+  const discoveryClause = buildDiscoveryClause(plan.discoveryPhrases);
 
   if (avatarType === 'avatar1') {
     // When the user named a concrete role, do NOT inject insurance/sales/finance —
@@ -82,32 +88,42 @@ export function assembleLanesFromIntent(avatarType, plan) {
     const userNamedRole = Boolean(roleClause);
     const industryFallback = userNamedRole ? '' : ' (insurance OR sales OR finance)';
 
-    return {
-      source: 'assembled',
-      lanes: [
-        {
-          query: `site:linkedin.com/in${rolePart}${locPart}${industryFallback} ${classOfTerms()}`,
-          num: 25,
-          note: 'recent graduate — graduation year on profile',
-        },
-        {
-          query: `site:linkedin.com/in${rolePart}${locPart}${industryFallback} ${GRAD_TERMS}`,
-          num: 25,
-          note: 'recent-grad / entry-level wording on profile',
-        },
-        {
-          query: `site:linkedin.com/in${rolePart}${locPart}${industryFallback} ${INTERN_TERMS} ${classOfTerms()}`,
-          num: 25,
-          note: 'recent graduate with internship experience',
-        },
-      ],
-    };
+    const lanes = [
+      {
+        query: `site:linkedin.com/in${rolePart}${locPart}${industryFallback} ${classOfTerms()}`,
+        num: 25,
+        note: 'recent graduate — graduation year on profile',
+      },
+      {
+        query: `site:linkedin.com/in${rolePart}${locPart}${industryFallback} ${GRAD_TERMS}`,
+        num: 25,
+        note: 'recent-grad / entry-level wording on profile',
+      },
+      {
+        query: `site:linkedin.com/in${rolePart}${locPart}${industryFallback} ${INTERN_TERMS} ${classOfTerms()}`,
+        num: 25,
+        note: 'recent graduate with internship experience',
+      },
+      {
+        query: `site:linkedin.com/in${rolePart}${locPart}${industryFallback} ${EDUCATION_TERMS}`,
+        num: 25,
+        note: 'early-career / education wording (universal)',
+      },
+    ];
+
+    if (discoveryClause) {
+      lanes.push({
+        query: `site:linkedin.com/in${rolePart}${locPart} ${discoveryClause}`,
+        num: 25,
+        note: 'local discovery phrases for this search',
+      });
+    }
+
+    return { source: 'assembled', lanes };
   }
 
   if (avatarType === 'avatar2') {
     // Broad recall — hard veto drops owners/CEOs after structuring.
-    // Exact-phrase-only ORs ("insurance producer" OR "insurance agent") often
-    // return 0 Google hits; bare producer/agent is what SerpAPI actually finds.
     const fromIntent = buildRoleClause(plan.roleTerms, plan.roleSynonyms, { maxTerms: 6 });
     const roles = fromIntent
       ? `(${fromIntent.replace(/^\(|\)$/g, '')} OR producer OR agent OR broker OR advisor OR "account manager")`
@@ -122,26 +138,33 @@ export function assembleLanesFromIntent(avatarType, plan) {
       ? ` ${String(plan.location.city).replace(/\b\w/g, (c) => c.toUpperCase())}`
       : '';
 
-    return {
-      source: 'assembled',
-      lanes: [
-        {
-          query: `site:linkedin.com/in${cityHint} ${roles}${industry} ${smallFirm} ${lightExcludes}`,
-          num: 25,
-          note: 'producer/agent at small or independent agency',
-        },
-        {
-          query: `site:linkedin.com/in${cityHint} ${roles}${industry} ${upskill} ${lightExcludes}`,
-          num: 25,
-          note: 'producer/agent talking about upskilling or career growth',
-        },
-        {
-          query: `site:linkedin.com/in${cityHint} ${roles}${industry} ${lightExcludes}`,
-          num: 25,
-          note: 'insurance producer/agent in target area',
-        },
-      ],
-    };
+    const lanes = [
+      {
+        query: `site:linkedin.com/in${cityHint} ${roles}${industry} ${smallFirm} ${lightExcludes}`,
+        num: 25,
+        note: 'producer/agent at small or independent agency',
+      },
+      {
+        query: `site:linkedin.com/in${cityHint} ${roles}${industry} ${upskill} ${lightExcludes}`,
+        num: 25,
+        note: 'producer/agent talking about upskilling or career growth',
+      },
+      {
+        query: `site:linkedin.com/in${cityHint} ${roles}${industry} ${lightExcludes}`,
+        num: 25,
+        note: 'insurance producer/agent in target area',
+      },
+    ];
+
+    if (discoveryClause) {
+      lanes.push({
+        query: `site:linkedin.com/in${cityHint} ${roles}${industry} ${discoveryClause} ${lightExcludes}`,
+        num: 25,
+        note: 'local agency-style discovery for this search',
+      });
+    }
+
+    return { source: 'assembled', lanes };
   }
 
   return { source: 'assembled', lanes: [] };

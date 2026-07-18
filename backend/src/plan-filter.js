@@ -9,7 +9,7 @@ import {
 } from './avatar2-fit.js';
 
 const RECENT_GRAD_RE =
-  /(class of (20\d{2})|recent grad(uate)?|new grad\b|aspiring|entry.?level|seeking entry|\bstudent\b|\bintern(ship)?\b|summer analyst|undergraduate)/i;
+  /(class of (20\d{2})|recent grad(uate)?|new grad\b|aspiring|entry.?level|seeking entry|\bstudent\b|\bintern(ship)?\b|summer analyst|undergraduate|graduated from|studying at|alumni|bachelor)/i;
 
 export function leadBlob(lead) {
   return [

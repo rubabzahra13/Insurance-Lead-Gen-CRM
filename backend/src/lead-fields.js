@@ -14,10 +14,14 @@
 
 /** Job/status wording — always a role, never an employer. */
 const JOB_TITLE_RE =
-  /\b(aspiring|seeking|open to work|student|intern|graduate|advisor|adviser|consultant|planner|analyst|associate|assistant|representative|specialist|manager|director|officer|leader|head of|engineer|developer|designer|coordinator|supervisor|recruiter|major|minor|candidate|professional|entry.?level|junior|senior|trainee|apprentice|class of|mba|bba|phd|bachelors?|masters? in|degree in)\b/i;
+  /\b(aspiring|seeking|open to work|student|intern|graduate|advisor|adviser|consultant|planner|analyst|associate|assistant|representative|specialist|manager|director|officer|leader|head of|engineer|developer|designer|coordinator|supervisor|recruiter|lecturer|professor|major|minor|candidate|professional|entry.?level|junior|senior|trainee|apprentice|class of|mba|bba|phd|bachelors?|masters? in|degree in)\b/i;
 
 /** Education institutions are not the employer we want in a Company column. */
 const EDUCATION_RE = /\b(university|college|school|institute|academy|campus)\b/i;
+
+/** LinkedIn Experience dumps pasted as "company" — dates, tenure, multi-clause blobs. */
+const EXPERIENCE_DUMP_RE =
+  /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{4}\b|\b20\d{2}\s*[-–—]\s*(present|20\d{2})\b|\bpresent\b|\b\d+\s*(years?|months?)\b|\bexperience\b|\beducation\b/i;
 
 /** Wording that means a phrase is a role, school or employer — never a place. */
 const NOT_A_PLACE_RE = new RegExp(
@@ -60,12 +64,24 @@ export function looksLikePlace(value) {
   return PLACE_SHAPE_RE.test(text) || BARE_CITY_RE.test(text);
 }
 
+export function looksLikeExperienceDump(value) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  if (text.length > 60) return true;
+  if (EXPERIENCE_DUMP_RE.test(text)) return true;
+  // Multiple sentence-like clauses: "Org. Title. Org. Sep 2010…"
+  if ((text.match(/\./g) || []).length >= 2) return true;
+  if (text.includes('/') && JOB_TITLE_RE.test(text)) return true;
+  return false;
+}
+
 export function cleanCompanyCandidate(value) {
   const text = String(value ?? '')
     .replace(/\s*[|·•].*$/, '')
     .replace(/\s+/g, ' ')
     .trim();
   if (!text || text.length > 60) return null;
+  if (looksLikeExperienceDump(text)) return null;
   // Checked before trailing punctuation is trimmed, so Google's truncated
   // "Equitable ..." is rejected rather than stored as a half name.
   if (/(\.\.\.|…)$/.test(text)) return null;
@@ -78,6 +94,24 @@ export function cleanCompanyCandidate(value) {
   return trimmed.length > 1 ? trimmed : null;
 }
 
+export function cleanSchoolCandidate(value) {
+  const text = String(value ?? '')
+    .replace(/\s*[|·•].*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text || text.length > 80) return null;
+  if (/(\.\.\.|…)$/.test(text)) return null;
+  // Deliberately NOT requiring an education keyword: "LUMS", "NUST", "UniSA",
+  // "IIT Bombay" and "Universidad de Buenos Aires" are all real schools that an
+  // English keyword list rejects. The extractor decides what a school is; this
+  // only screens out job titles and truncated text.
+  if (JOB_TITLE_RE.test(text)) return null;
+  if (!/^[\p{Lu}\p{N}]/u.test(text)) return null;
+
+  const trimmed = text.replace(/[,;\s]+$/, '').trim();
+  return trimmed.length > 1 ? trimmed : null;
+}
+
 /**
  * Last gate before a lead is exported. Drops a company or location that cannot
  * be justified, whichever structurer produced it.
@@ -86,7 +120,8 @@ export function sanitizeLeadFields(lead) {
   if (!lead || typeof lead !== 'object') return lead;
 
   const company = cleanCompanyCandidate(lead.company);
+  const school = cleanSchoolCandidate(lead.school);
   const location = looksLikePlace(lead.location) ? cleanPlaceCandidate(lead.location) : null;
 
-  return { ...lead, company, location };
+  return { ...lead, company, school, location };
 }

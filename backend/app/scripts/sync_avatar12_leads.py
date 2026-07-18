@@ -52,6 +52,7 @@ def sync_single_lead(lead: dict[str, Any]) -> dict[str, Any]:
                 headline=lead.get("headline") or lead.get("title"),
                 role=_drop_status_phrase(lead.get("role") or lead.get("title")),
                 company=_drop_status_phrase(_mark_weak(lead.get("company"), "company", weak_fields)),
+                school=lead.get("school"),
                 past_experience=_mark_weak(
                     lead.get("past_experience"), "past_experience", weak_fields
                 ) or lead.get("snippet") or lead.get("evidence"),

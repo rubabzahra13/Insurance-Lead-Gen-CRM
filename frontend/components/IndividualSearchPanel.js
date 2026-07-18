@@ -370,6 +370,8 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
   const reportCompletion = (rawLeads, query) => {
     onComplete?.({
       query,
+      role: roleQuery.trim() || null,
+      location: selectedLocation?.label || selectedLocation?.mainText || null,
       leads: (rawLeads || []).map((lead) => ({
         name: lead.name || null,
         linkedin_url: lead.link || null,

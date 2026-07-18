@@ -1,4 +1,13 @@
 import { slugMatchesName } from './utils.js';
+import { hasUpgraderFitSignal, hasProducerRole } from './avatar2-fit.js';
+
+function extractFollowerCount(lead) {
+  const blob = [lead.snippet, lead.evidence, lead.fit_evidence].filter(Boolean).join(' ');
+  const match = blob.match(/([\d,.]+)\+?\s*followers/i);
+  if (!match) return 0;
+  const n = Number(String(match[1]).replace(/,/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
 
 export function scoreLeadConfidence(lead, context = {}) {
   const reasons = [];
@@ -17,6 +26,12 @@ export function scoreLeadConfidence(lead, context = {}) {
   if (lead.company) {
     score += 0.12;
     reasons.push('has_company');
+  }
+
+  // Students often have school but no company — treat school like company for avatar1.
+  if (lead.school) {
+    score += lead.company ? 0.06 : 0.12;
+    reasons.push('has_school');
   }
 
   if (lead.location) {
@@ -98,6 +113,37 @@ export function scoreLeadConfidence(lead, context = {}) {
     reasons.push('missing_link');
   }
 
+  // Soft value signals (never hard gates) — universal, not prestige brand lists.
+  const followers = extractFollowerCount(lead);
+  if (followers >= 500) {
+    score += 0.03;
+    reasons.push('network_signal');
+  }
+  if (followers >= 2000) {
+    score += 0.03;
+    reasons.push('strong_network_signal');
+  }
+
+  if (context.avatarType === 'avatar2') {
+    const title = String(lead.title || lead.headline || lead.role || '');
+    if (hasProducerRole(title)) {
+      score += 0.05;
+      reasons.push('clear_producer_title');
+    }
+    const blob = [lead.snippet, lead.evidence, lead.fit_evidence, lead.title, lead.company]
+      .filter(Boolean)
+      .join(' ');
+    if (hasUpgraderFitSignal(blob, lead)) {
+      score += 0.05;
+      reasons.push('growth_or_agency_fit');
+    }
+  }
+
+  if (context.avatarType === 'avatar1' && lead.school && lead.title) {
+    score += 0.04;
+    reasons.push('grad_profile_completeness');
+  }
+
   const confidence = Math.max(0, Math.min(1, Number(score.toFixed(2))));
 
   return {
@@ -129,6 +175,7 @@ const REASON_LABELS = {
   has_name: 'Name matched the search results',
   has_title: 'Job title matched the search results',
   has_company: 'Company matched the search results',
+  has_school: 'School or university was listed',
   has_location: 'Location was listed in the results',
   has_snippet: 'We found a short profile summary',
   has_link: 'A LinkedIn profile link was found',
@@ -144,6 +191,11 @@ const REASON_LABELS = {
   duplicate_link_collision: 'This link is already used for another lead',
   suspicious_slug_pattern: 'The profile URL looks auto-generated — review carefully',
   missing_link: 'No LinkedIn link was found',
+  network_signal: 'Profile shows a meaningful LinkedIn network',
+  strong_network_signal: 'Profile shows a strong LinkedIn network',
+  clear_producer_title: 'Title clearly matches a producer/agent role',
+  growth_or_agency_fit: 'Profile shows agency or growth fit signals',
+  grad_profile_completeness: 'Graduate profile has school and title filled in',
 };
 
 function describeReasons(reasons) {
