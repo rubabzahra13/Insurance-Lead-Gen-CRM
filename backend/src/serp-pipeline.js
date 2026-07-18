@@ -136,7 +136,7 @@ export async function runSerpLeadPipeline(userQuery, options = {}) {
     lanesSource: plan.lanesSource,
   });
 
-  const rawItems = await progress.step('Fast Google search (parallel lanes)', () =>
+  const rawItems = await progress.step('Profile search (parallel lanes)', () =>
     retrieveSerpItems(plan, progress),
   );
 

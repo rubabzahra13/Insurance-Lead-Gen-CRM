@@ -18,29 +18,36 @@ const PIPELINE_STEPS = [
   {
     key: 'searching',
     number: 2,
-    label: 'Google search',
-    message: 'Searching Google for matching LinkedIn profiles',
-    match: /google search|serp/i,
+    label: 'Profile search',
+    message: 'Searching for matching LinkedIn profiles',
+    // Do not match bare "serp" — later steps like "Finding public emails (SerpAPI)"
+    // would rewind the UI back to this step.
+    match: /profile search|fast google search|google search \(parallel|parallel lanes/i,
   },
   {
     key: 'structuring',
     number: 3,
     label: 'Filter matches',
     message: 'Structuring profiles and filtering against the checklist',
-    match: /structur|reading|quality filter/i,
+    match: /structur|ai-reading|quality filter|reading & structuring/i,
   },
   {
     key: 'verifying',
     number: 4,
     label: 'Verify & save',
     message: 'Checking profile links and saving to outreach drafts',
-    match: /verif|scor|export|sync/i,
+    match: /verif|scor|export|sync|public emails|finding public/i,
   },
 ];
 
 function pipelineStepFromLabel(label) {
   if (!label) return null;
   return PIPELINE_STEPS.find((step) => step.match.test(label)) || null;
+}
+
+function pipelineStepIndex(key) {
+  const idx = PIPELINE_STEPS.findIndex((step) => step.key === key);
+  return idx >= 0 ? idx : -1;
 }
 
 function formatPlanRenewalDate(isoDate) {
@@ -213,7 +220,15 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
 
   const advancePipelineStep = (label) => {
     const step = pipelineStepFromLabel(label);
-    if (step) setSearchState(step.key);
+    if (!step) return;
+    // Never rewind — late steps can share words with earlier ones.
+    setSearchState((prev) => {
+      if (prev === 'completed' || prev === 'failed') return prev;
+      const prevIdx = pipelineStepIndex(prev);
+      const nextIdx = pipelineStepIndex(step.key);
+      if (prevIdx >= 0 && nextIdx < prevIdx) return prev;
+      return step.key;
+    });
   };
 
   const handleRoleChange = (e) => {
@@ -249,7 +264,7 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
     replaceLogs([
       `[INIT] Lead search started for role: "${role}", location: "${selectedLocation.label}"`,
       `[INFO] Lead type: ${individualLabel(activeSegment)} (selected workspace)`,
-      `[INFO] Engine: Google search (SERP) + AI filtering`,
+      `[INFO] Engine: Profile search + AI filtering`,
     ]);
 
     await runRecruitmentScraper(role, activeSegment, selectedLocation);
@@ -269,7 +284,7 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
           `[INIT] Lead search started for role: "${roleQuery}"` +
             (selectedLocation?.label ? `, location: "${selectedLocation.label}"` : ''),
           `[INFO] Lead type: ${individualLabel(activeSegment)} (selected workspace)`,
-          `[INFO] Engine: Google search (SERP) + AI filtering`,
+          `[INFO] Engine: Profile search + AI filtering`,
           `[LOG] Search job created: ${runId}`,
         ];
 
@@ -316,7 +331,7 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
   const runRecruitmentScraper = async (role, avatarType, location) => {
     const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
     appendLogs([
-      `[STEP] Starting Google search for matching profiles...`,
+      `[STEP] Starting profile search for matching profiles...`,
       `[LOG] Submitting search request...`,
     ]);
 
@@ -484,8 +499,8 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
               </h2>
               <p className="individual-search-hub__desc">
                 {activeSegment === 'avatar1'
-                  ? 'Enter a role or major and pick a city or country (both required). We add recent-graduate filters, search Google, and save matches to your outreach drafts.'
-                  : 'Enter a role and pick a city or country (both required). We look for producers/agents open to a better next role (or upskilling talk), not CEOs or founders.'}
+                  ? 'Choose a role or major and a city or country. Find recent graduates and early-career candidates for outreach.'
+                  : 'Choose a role and a city or country. Find producers and agents open to a better next role, not CEOs or founders.'}
               </p>
             </div>
 

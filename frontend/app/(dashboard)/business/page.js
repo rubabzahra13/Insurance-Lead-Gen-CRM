@@ -22,6 +22,7 @@ import {
   Check, AlertCircle, Trash2
 } from 'lucide-react';
 import MenuSelect from '../../../components/MenuSelect';
+import SearchableFilterSelect from '../../../components/SearchableFilterSelect';
 import DotScrollArea from '../../../components/DotScrollArea';
 
 const BUSINESS_WORKSPACE_SECTIONS = [
@@ -214,25 +215,29 @@ function BusinessWorkspaceContent() {
     if (tablePage > tablePageCount) setTablePage(tablePageCount);
   }, [tablePage, tablePageCount]);
 
-  const renderQueryFilter = (idSuffix = '') => (
+  const queryFilterOptions = useMemo(
+    () => Array.from(new Set(leads.map((lead) => lead.source_query).filter(Boolean)))
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })),
+    [leads],
+  );
+
+  const renderQueryFilter = () => (
     <div className="business-filter-inline">
-      <label className="business-filter-label" htmlFor={`business-query-filter${idSuffix}`}>Query</label>
-      <select
-        id={`business-query-filter${idSuffix}`}
-        className="business-filter-select"
-        value={selectedQueryFilter}
-        onChange={(e) => setSelectedQueryFilter(e.target.value)}
-      >
-        <option value="">All queries</option>
-        {Array.from(new Set(leads.map((lead) => lead.source_query).filter(Boolean))).map((q) => (
-          <option key={q} value={q}>{q}</option>
-        ))}
-      </select>
-      {selectedQueryFilter && (
+      <SearchableFilterSelect
+        label="Query"
+        value={selectedQueryFilter || 'all'}
+        options={queryFilterOptions}
+        allLabel="All queries"
+        allValue="all"
+        searchPlaceholder="Search queries…"
+        emptyLabel="No queries match"
+        onChange={(next) => setSelectedQueryFilter(next === 'all' ? '' : next)}
+      />
+      {selectedQueryFilter ? (
         <button type="button" className="business-filter-clear" onClick={() => setSelectedQueryFilter('')}>
           Clear
         </button>
-      )}
+      ) : null}
     </div>
   );
 
@@ -1545,7 +1550,7 @@ function BusinessWorkspaceContent() {
                     Drag a card, use the stage dropdown, or log notes so AI can move it for you.
                   </p>
                 </div>
-                {renderQueryFilter('-pipeline')}
+                {renderQueryFilter()}
                 <p className="business-pipeline-scroll-hint business-pipeline-scroll-hint--desktop" aria-hidden="true">Swipe columns →</p>
                 <p className="business-pipeline-scroll-hint business-pipeline-scroll-hint--mobile" aria-hidden="true">Scroll for all stages ↓</p>
               </div>
@@ -1570,7 +1575,7 @@ function BusinessWorkspaceContent() {
                     Use the stage dropdown, or open a lead and log notes so AI can update the stage.
                   </p>
                 </div>
-                {renderQueryFilter('-table')}
+                {renderQueryFilter()}
               </div>
               {filteredLeads.length === 0 ? (
                 <div className="business-tab-state">

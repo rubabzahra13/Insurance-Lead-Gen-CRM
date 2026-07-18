@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Check, ChevronsUpDown, Search, X } from 'lucide-react';
 
 function normalizeSearchText(value) {
@@ -37,7 +38,10 @@ export default function SearchableFilterSelect({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [panelStyle, setPanelStyle] = useState(null);
   const rootRef = useRef(null);
+  const triggerRef = useRef(null);
+  const panelRef = useRef(null);
   const inputRef = useRef(null);
   const listId = useId();
   const searching = Boolean(query.trim());
@@ -93,11 +97,61 @@ export default function SearchableFilterSelect({
 
   const matchCount = recentMatches.length + otherMatches.length;
 
+  const updatePanelPosition = () => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+
+    const rect = trigger.getBoundingClientRect();
+    const viewportPad = 8;
+    const minWidth = 240;
+    const maxWidth = Math.min(360, window.innerWidth - viewportPad * 2);
+    const width = Math.min(maxWidth, Math.max(rect.width, minWidth));
+    const estimatedHeight = Math.min(320, 56 + Math.max(matchCount, 1) * 36);
+    const spaceBelow = window.innerHeight - rect.bottom - viewportPad;
+    const openUp = spaceBelow < estimatedHeight && rect.top > spaceBelow;
+
+    let left = rect.left;
+    if (left + width > window.innerWidth - viewportPad) {
+      left = Math.max(viewportPad, window.innerWidth - width - viewportPad);
+    }
+    if (left < viewportPad) left = viewportPad;
+
+    setPanelStyle({
+      position: 'fixed',
+      left,
+      width,
+      top: openUp ? undefined : rect.bottom + 6,
+      bottom: openUp ? window.innerHeight - rect.top + 6 : undefined,
+      maxHeight: Math.min(320, openUp ? rect.top - viewportPad - 6 : spaceBelow),
+      zIndex: 80,
+    });
+  };
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setPanelStyle(null);
+      return undefined;
+    }
+
+    updatePanelPosition();
+
+    const onReposition = () => updatePanelPosition();
+    window.addEventListener('resize', onReposition);
+    window.addEventListener('scroll', onReposition, true);
+
+    return () => {
+      window.removeEventListener('resize', onReposition);
+      window.removeEventListener('scroll', onReposition, true);
+    };
+  }, [open, matchCount]);
+
   useEffect(() => {
     if (!open) return undefined;
 
     const onPointerDown = (event) => {
-      if (!rootRef.current?.contains(event.target)) {
+      const inTrigger = rootRef.current?.contains(event.target);
+      const inPanel = panelRef.current?.contains(event.target);
+      if (!inTrigger && !inPanel) {
         setOpen(false);
         setQuery('');
       }
@@ -141,10 +195,90 @@ export default function SearchableFilterSelect({
     </button>
   );
 
+  const panel = open && panelStyle && typeof document !== 'undefined'
+    ? createPortal(
+      <div
+        ref={panelRef}
+        className="searchable-filter__panel searchable-filter__panel--portal"
+        style={panelStyle}
+        role="presentation"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="searchable-filter__search">
+          <Search size={14} aria-hidden="true" />
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            placeholder={searchPlaceholder}
+            aria-label={`Search ${label}`}
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.stopPropagation()}
+          />
+          {searching ? (
+            <button
+              type="button"
+              className="searchable-filter__clear-query"
+              aria-label="Clear search"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => setQuery('')}
+            >
+              <X size={12} />
+            </button>
+          ) : null}
+        </div>
+
+        <div className="searchable-filter__list" id={listId} role="listbox" aria-label={label}>
+          {!searching && (
+            <button
+              type="button"
+              role="option"
+              aria-selected={value === allValue}
+              className={`searchable-filter__option${value === allValue ? ' is-selected' : ''}`}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => choose(allValue)}
+            >
+              <span>{allLabel}</span>
+              {value === allValue ? <Check size={14} aria-hidden="true" /> : null}
+            </button>
+          )}
+
+          {recentMatches.length > 0 && (
+            <>
+              <div className="searchable-filter__group">
+                {searching ? 'Recent matches' : 'Recent'}
+              </div>
+              {recentMatches.map((opt) => renderOption(opt, 'recent-'))}
+            </>
+          )}
+
+          {otherMatches.length > 0 && (
+            <>
+              <div className="searchable-filter__group">
+                {searching ? 'Matches' : 'All'}
+                <span className="searchable-filter__count">{otherMatches.length}</span>
+              </div>
+              {otherMatches.map((opt) => renderOption(opt))}
+            </>
+          )}
+
+          {searching && matchCount === 0 && (
+            <p className="searchable-filter__empty">{emptyLabel}</p>
+          )}
+        </div>
+      </div>,
+      document.body,
+    )
+    : null;
+
   return (
     <div className={`searchable-filter${open ? ' is-open' : ''}${value !== allValue ? ' has-value' : ''}`} ref={rootRef}>
       <span className="searchable-filter__label">{label}</span>
       <button
+        ref={triggerRef}
         type="button"
         className="searchable-filter__trigger"
         aria-haspopup="listbox"
@@ -157,80 +291,7 @@ export default function SearchableFilterSelect({
         </span>
         <ChevronsUpDown size={14} aria-hidden="true" />
       </button>
-
-      {open && (
-        <div
-          className="searchable-filter__panel"
-          role="presentation"
-          onMouseDown={(event) => event.stopPropagation()}
-        >
-          <div className="searchable-filter__search">
-            <Search size={14} aria-hidden="true" />
-            <input
-              ref={inputRef}
-              type="search"
-              value={query}
-              placeholder={searchPlaceholder}
-              aria-label={`Search ${label}`}
-              autoComplete="off"
-              autoCorrect="off"
-              spellCheck={false}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.stopPropagation()}
-            />
-            {searching ? (
-              <button
-                type="button"
-                className="searchable-filter__clear-query"
-                aria-label="Clear search"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => setQuery('')}
-              >
-                <X size={12} />
-              </button>
-            ) : null}
-          </div>
-
-          <div className="searchable-filter__list" id={listId} role="listbox" aria-label={label}>
-            {!searching && (
-              <button
-                type="button"
-                role="option"
-                aria-selected={value === allValue}
-                className={`searchable-filter__option${value === allValue ? ' is-selected' : ''}`}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => choose(allValue)}
-              >
-                <span>{allLabel}</span>
-                {value === allValue ? <Check size={14} aria-hidden="true" /> : null}
-              </button>
-            )}
-
-            {recentMatches.length > 0 && (
-              <>
-                <div className="searchable-filter__group">
-                  {searching ? 'Recent matches' : 'Recent'}
-                </div>
-                {recentMatches.map((opt) => renderOption(opt, 'recent-'))}
-              </>
-            )}
-
-            {otherMatches.length > 0 && (
-              <>
-                <div className="searchable-filter__group">
-                  {searching ? 'Matches' : 'All'}
-                  <span className="searchable-filter__count">{otherMatches.length}</span>
-                </div>
-                {otherMatches.map((opt) => renderOption(opt))}
-              </>
-            )}
-
-            {searching && matchCount === 0 && (
-              <p className="searchable-filter__empty">{emptyLabel}</p>
-            )}
-          </div>
-        </div>
-      )}
+      {panel}
     </div>
   );
 }

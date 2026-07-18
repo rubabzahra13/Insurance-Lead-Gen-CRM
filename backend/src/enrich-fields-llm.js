@@ -1,9 +1,9 @@
 // Dynamic field extraction for company / school / location / past_experience.
 //
-// Why AI (not layout regex): Google/LinkedIn snippets rearrange employer and
-// internship text in many shapes. The model only COPIES short spans from the
-// retrieved text (extractor, never oracle). Code sanitize rejects Experience
-// dumps so a bad extraction cannot pollute the CRM.
+// Company (and related fields) are decided by the model from the retrieved
+// snippet — not by industry keyword lists or layout regex. The model only
+// COPIES short spans that appear in the text (extractor, never oracle).
+// Code sanitize is shape-only: reject Experience dumps / truncated names.
 
 import { sanitizeLeadFields, looksLikeExperienceDump, cleanCompanyCandidate } from './lead-fields.js';
 
@@ -43,45 +43,40 @@ export function groundExtractedValue(value, sourceText, { minLen = 2 } = {}) {
 function buildPrompt(batch) {
   return [
     'Extract CRM fields from each person\'s LinkedIn/Google snippet text.',
+    'Rules are dynamic: adapt to whatever career, country, and snippet layout you see.',
     'Copy short spans only. Never invent. Prefer null over a messy guess.',
     '',
-    '## What "company" means',
-    'company = ONLY the employer / internship host ORGANIZATION NAME.',
-    'It must be a short proper name (about 2–6 words), e.g.:',
-    '  ✓ "Goldman Sachs"',
-    '  ✓ "Equitable Advisors"',
-    '  ✓ "Systems Limited"',
-    '  ✓ "Microsoft"',
-    '  ✓ "Jazz"',
-    '',
-    'company is NEVER a whole Experience block. These are WRONG:',
-    '  ✗ "COMSATS University Islamabad Graphic. Lecturer/Software Developer. COMSATS University Islamabad. Sep 2010 - Present 15 years 11 months. Islamabad…"',
-    '  ✗ "Software Engineering student at Air University, Islamabad | Class of 2025"',
-    '  ✗ "Lecturer/Software Developer"',
-    '  ✗ anything with dates, "Present", "years", "months", or multiple sentences',
-    '',
+    '## company',
+    'The employer or internship host ORGANIZATION name only (short proper name).',
+    'Read the snippet and decide what the org is — do not assume an industry.',
+    'Common shapes (not exhaustive):',
+    '  - "Role at Org" / "Role @ Org"',
+    '  - "Role. Org. Mon YYYY"',
+    '  - "Role. Org. City, Region, Country. N followers"',
+    '  - LinkedIn Experience lines naming an employer',
+    'Reject: job titles alone, whole Experience dumps, dates/tenure, student-only school lines.',
     'If they only list a school (student / Class of / Education) → company: null, fill school.',
-    'If they work AS staff at a university, still put the short school name in school;',
-    '  put company: null unless a clear separate employer name appears (do not paste the Experience dump).',
     '',
-    '## Other fields',
-    '- school: short school/institute name or acronym ("COMSATS University Islamabad", "LUMS", "FAST", "NUST").',
-    '- location: short place ("Islamabad, Pakistan").',
-    '- past_experience: ONE short phrase max ~80 chars, e.g. "Sales Intern at Goldman Sachs".',
-    '  Never paste dates, tenure, or multi-sentence Experience text into past_experience.',
+    '## school / location / past_experience',
+    '- school: short school/institute name or acronym',
+    '- location: short place',
+    '- past_experience: ONE short phrase max ~80 chars (e.g. "Intern at Org")',
     '',
-    '## Examples',
+    '## Examples (illustrative — apply the same judgment to any industry)',
     'Text: "Intern at Equitable Advisors. Class of 2025. Dallas."',
     '→ {"company":"Equitable Advisors","school":null,"location":"Dallas","past_experience":"Intern at Equitable Advisors"}',
     '',
     'Text: "Software Engineering student at Air University. Class of 2026. Islamabad."',
     '→ {"company":null,"school":"Air University","location":"Islamabad","past_experience":null}',
     '',
-    'Text: "Experience Sales Intern · Goldman Sachs · May 2024. New York."',
-    '→ {"company":"Goldman Sachs","school":null,"location":"New York","past_experience":"Sales Intern at Goldman Sachs"}',
+    'Text: "Casualty Claims Adjuster. Crawford & Company. Feb 2022 - Jan 2023."',
+    '→ {"company":"Crawford & Company","school":null,"location":null,"past_experience":"Claims Adjuster at Crawford & Company"}',
     '',
-    'Text: "Lecturer/Software Developer. COMSATS University Islamabad. Sep 2010 - Present 15 years. Islamabad."',
-    '→ {"company":null,"school":"COMSATS University Islamabad","location":"Islamabad","past_experience":null}',
+    'Text: "Insurance Analyst Intern @ State Farm Agency. Los Angeles."',
+    '→ {"company":"State Farm Agency","school":null,"location":"Los Angeles","past_experience":"Intern at State Farm Agency"}',
+    '',
+    'Text: "AI Intern. Sybrid Careers. Jun 2025 - Aug 2025. Islamabad."',
+    '→ {"company":"Sybrid Careers","school":null,"location":"Islamabad","past_experience":"AI Intern at Sybrid Careers"}',
     '',
     '## Output',
     'One JSON object per id. Fields: company, school, location, past_experience.',
@@ -105,6 +100,7 @@ async function callOpenAI(prompt, signalMs) {
           role: 'system',
           content:
             'You extract short CRM field values from LinkedIn snippet text. '
+            + 'Decide company dynamically from the text for any career or country. '
             + 'company must be a short organization name only — never an Experience dump, '
             + 'never dates, never job titles alone. Prefer null over garbage. Output JSON only.',
         },
@@ -143,12 +139,11 @@ function usableCompany(existing) {
   return cleanCompanyCandidate(existing);
 }
 
-function mergeExtracted(target, row, sourceText) {
+export function mergeExtracted(target, row, sourceText) {
   const existingCompany = usableCompany(target.company);
+  const groundedCompany = cleanCompanyCandidate(groundExtractedValue(row.company, sourceText));
 
-  const company = existingCompany
-    || cleanCompanyCandidate(groundExtractedValue(row.company, sourceText))
-    || null;
+  const company = existingCompany || groundedCompany || null;
   const school = target.school
     || groundExtractedValue(row.school, sourceText)
     || null;
@@ -159,12 +154,22 @@ function mergeExtracted(target, row, sourceText) {
     ? groundPastExperience(row.past_experience, sourceText)
     : target.past_experience;
 
+  const fieldSource = {
+    ...(target.fieldSource || {}),
+    company: existingCompany
+      ? (target.fieldSource?.company || 'linkedin_card')
+      : groundedCompany
+        ? 'ai'
+        : (target.fieldSource?.company || null),
+  };
+
   return sanitizeLeadFields({
     ...target,
     company,
     school,
     location,
     past_experience: pastExperience,
+    fieldSource,
   });
 }
 
@@ -180,7 +185,7 @@ function needsEnrichment(lead) {
 
 /**
  * Fill / repair company/school/location/past_experience from retrieved text via AI.
- * Replaces Experience-dump "company" values. Never throws.
+ * This is the dynamic company path for cardless snippets. Never throws.
  */
 export async function enrichLeadFields(leads, { onLog } = {}) {
   if (!fieldEnrichmentAvailable() || !Array.isArray(leads) || leads.length === 0) return leads;
@@ -199,12 +204,16 @@ export async function enrichLeadFields(leads, { onLog } = {}) {
 
   const pending = prepared
     .map((lead, index) => ({ index, lead, text: sourceTextFor(lead) }))
-    .filter(({ lead, text }) => text.length > 20)
+    .filter(({ text }) => text.length > 20)
     .filter(({ lead }) => needsEnrichment(lead));
 
   if (pending.length === 0) return prepared;
 
-  onLog?.(`  AI field extract: ${pending.length} lead(s) need company/school/location/experience`);
+  const missingCompany = pending.filter(({ lead }) => !usableCompany(lead.company)).length;
+  onLog?.(
+    `  AI field extract: ${pending.length} lead(s) need fields`
+    + (missingCompany ? ` (${missingCompany} missing company)` : ''),
+  );
 
   const out = [...prepared];
   const timeoutMs = Number(process.env.OPENAI_TIMEOUT_MS ?? 60_000);
@@ -226,6 +235,10 @@ export async function enrichLeadFields(leads, { onLog } = {}) {
   }
 
   const filled = out.filter((lead) => lead.company || lead.school || lead.location || lead.past_experience).length;
-  onLog?.(`  fields enriched: ${filled}/${out.length} lead(s) now have company, school, location or experience`);
+  const withCompany = out.filter((lead) => lead.company).length;
+  onLog?.(
+    `  fields enriched: ${filled}/${out.length} lead(s) have company/school/location/experience`
+    + ` (${withCompany} with company)`,
+  );
   return out;
 }

@@ -37,10 +37,6 @@ function ChartTooltip({ active, payload, label }) {
   );
 }
 
-/** Role classifiers for individual leads (role text is free-form from LinkedIn). */
-const LICENSED_ROLE_RE = /agent|broker|licensed|underwrit|adjuster|claims/i;
-const DECISION_MAKER_RE = /ceo|chief|founder|owner|president|principal|partner|director|\bvp\b|vice president|head|manager/i;
-
 function MetricCard({ href, icon, iconBg, iconColor, title, desc, kpis }) {
   return (
     <article className="dash-metric-card">
@@ -158,44 +154,57 @@ export default function HomeDashboard() {
   const totalIndividuals = individualChart.reduce((sum, row) => sum + row.value, 0);
   const totalBusinesses = businessChart.reduce((sum, row) => sum + row.value, 0);
 
-  const businessStats = useMemo(() => {
-    const newLeads = businessLeads.filter((l) => (l.pipeline_stage || 'new') === 'new').length;
-    return { newLeads };
-  }, [businessLeads]);
+  // Align with Individual Leads: Sent filter, unsent drafts, contacts on file.
+  const individualOutreach = useMemo(() => {
+    const hasContact = (l) => Boolean(
+      String(l.contact_email || '').trim() || String(l.contact_phone || '').trim(),
+    );
+    const status = (l) => l.latest_draft?.status || null;
 
-  // Role composition of the sourced individuals (who did we actually find?).
-  const individualRoles = useMemo(() => {
-    const roleOf = (l) => l.role || '';
-    const licensed = individualLeads.filter((l) => LICENSED_ROLE_RE.test(roleOf(l))).length;
-    const decisionMakers = individualLeads.filter((l) => DECISION_MAKER_RE.test(roleOf(l))).length;
-    const companies = new Set(
-      individualLeads.map((l) => (l.company || '').trim().toLowerCase()).filter(Boolean)
-    ).size;
-    return { licensed, decisionMakers, companies };
+    const sent = individualLeads.filter((l) => status(l) === 'sent').length;
+    // Unsent leads that already have a draft message (same pool you open in Outreach).
+    const drafts = individualLeads.filter((l) => status(l) === 'draft').length;
+    const reachable = individualLeads.filter(hasContact).length;
+
+    return { sent, drafts, reachable };
   }, [individualLeads]);
 
-  // Quality signals on the sourced businesses.
-  const businessMetrics = useMemo(() => {
-    const rated = businessLeads
-      .map((l) => parseFloat(l.rating))
-      .filter((n) => !Number.isNaN(n));
-    const avgRating = rated.length ? rated.reduce((sum, n) => sum + n, 0) / rated.length : null;
-    const enriched = businessLeads.filter(
-      (l) => l.website || l.contact_email || l.contact_linkedin || l.phone
-    ).length;
-    return { avgRating, enriched };
+  // Coverage insights from businesses currently on the board (live from API data).
+  const businessInsights = useMemo(() => {
+    const parseRating = (value) => {
+      const n = parseFloat(value);
+      return Number.isFinite(n) ? n : null;
+    };
+    const cityOf = (lead) => {
+      const address = String(lead.address || '').trim();
+      if (!address) return '';
+      const parts = address.split(',').map((p) => p.trim()).filter(Boolean);
+      if (parts.length >= 2) {
+        return parts[parts.length - 2].replace(/\s+\d{5}(?:-\d{4})?$/i, '').trim();
+      }
+      return parts[0] || '';
+    };
+
+    const highRated = businessLeads.filter((l) => {
+      const rating = parseRating(l.rating);
+      return rating != null && rating >= 4;
+    }).length;
+    const reachable = businessLeads.filter((l) => l.phone || l.contact_email).length;
+    const markets = new Set(
+      businessLeads.map(cityOf).map((c) => c.toLowerCase()).filter(Boolean),
+    ).size;
+
+    return { highRated, reachable, markets };
   }, [businessLeads]);
 
   if (loading) {
     return (
       <section className="home-dashboard">
-        <div className="dash-launch-row">
-          <div className="dash-launch-panel skeleton-shimmer" style={{ height: 140 }} />
-          <div className="dash-launch-panel skeleton-shimmer" style={{ height: 140 }} />
-        </div>
-        <div className="dash-charts-grid">
-          <div className="dash-chart-card skeleton-shimmer" style={{ height: 320 }} />
-          <div className="dash-chart-card skeleton-shimmer" style={{ height: 320 }} />
+        <div className="dash-paths-grid">
+          <div className="dash-metric-card skeleton-shimmer" style={{ minHeight: 168 }} />
+          <div className="dash-metric-card skeleton-shimmer" style={{ minHeight: 168 }} />
+          <div className="dash-chart-card skeleton-shimmer" style={{ minHeight: 280 }} />
+          <div className="dash-chart-card skeleton-shimmer" style={{ minHeight: 280 }} />
         </div>
       </section>
     );
@@ -213,18 +222,18 @@ export default function HomeDashboard() {
         </div>
       )}
 
-      <div className="dash-workflow-row">
+      <div className="dash-paths-grid">
         <MetricCard
           href="/recruitment"
           icon={<Users size={18} />}
           iconBg="var(--accent-primary-subtle)"
           iconColor={COLORS.oldRose}
           title="Individual outreach"
-          desc="LinkedIn profiles → AI drafts → email/SMS"
+          desc="LinkedIn profiles → AI drafts → send message"
           kpis={[
-            { label: 'Licensed agents', value: individualRoles.licensed, hint: 'agents & brokers' },
-            { label: 'Decision-makers', value: individualRoles.decisionMakers, hint: 'owners, partners, directors' },
-            { label: 'Companies', value: individualRoles.companies, hint: 'distinct employers' },
+            { label: 'Sent', value: individualOutreach.sent, hint: 'marked as sent' },
+            { label: 'Drafts', value: individualOutreach.drafts, hint: 'ready to copy' },
+            { label: 'Reachable', value: individualOutreach.reachable, hint: 'email or phone on file' },
           ]}
         />
 
@@ -237,25 +246,21 @@ export default function HomeDashboard() {
           desc="Find local businesses → kanban stages → follow-ups"
           kpis={[
             {
-              label: 'Avg rating',
-              value:
-                businessMetrics.avgRating != null ? (
-                  <span className="dash-kpi__rating">
-                    {businessMetrics.avgRating.toFixed(1)}
-                    <Star className="dash-kpi__star" fill="currentColor" strokeWidth={0} aria-hidden="true" />
-                  </span>
-                ) : (
-                  '—'
-                ),
-              hint: 'Google score',
+              label: 'High rated',
+              value: businessInsights.highRated,
+              hint: (
+                <span className="dash-kpi__hint-rating">
+                  4
+                  <Star className="dash-kpi__star" fill="currentColor" strokeWidth={0} aria-hidden="true" />
+                  + on Google
+                </span>
+              ),
             },
-            { label: 'Enriched', value: businessMetrics.enriched, hint: 'website or contact found' },
-            { label: 'New leads', value: businessStats.newLeads, hint: 'on the board' },
+            { label: 'Reachable', value: businessInsights.reachable, hint: 'phone or email on file' },
+            { label: 'Markets', value: businessInsights.markets, hint: 'cities on the board' },
           ]}
         />
-      </div>
 
-      <div className="dash-charts-grid">
         <article className="dash-chart-card">
           <header className="dash-chart-header">
             <div>
@@ -268,8 +273,8 @@ export default function HomeDashboard() {
           {totalIndividuals === 0 ? (
             <p className="dash-empty">No individual leads yet. Run a search for job seekers or job upgraders to populate this chart.</p>
           ) : (
-            <div className="dash-chart-split">
-              <ResponsiveContainer width="100%" height={220}>
+            <div className="dash-chart-body dash-chart-split">
+              <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={individualChart} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke={COLORS.lightBlue} vertical={false} />
                   <XAxis dataKey="name" tick={{ fill: COLORS.text, fontSize: 12, opacity: 0.55 }} axisLine={false} tickLine={false} />
@@ -283,14 +288,14 @@ export default function HomeDashboard() {
                 </BarChart>
               </ResponsiveContainer>
 
-              <ResponsiveContainer width="100%" height={220}>
+              <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
                     data={individualChart}
                     dataKey="value"
                     nameKey="name"
-                    innerRadius={52}
-                    outerRadius={78}
+                    innerRadius="42%"
+                    outerRadius="68%"
                     paddingAngle={3}
                   >
                     {individualChart.map((entry) => (
@@ -316,30 +321,32 @@ export default function HomeDashboard() {
           {totalBusinesses === 0 ? (
             <p className="dash-empty">No business leads yet. Search for founder-led or small businesses to populate this chart.</p>
           ) : (
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart
-                data={businessChart}
-                layout="vertical"
-                margin={{ top: 4, right: 16, left: 8, bottom: 4 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke={COLORS.lightBlue} horizontal={false} />
-                <XAxis type="number" allowDecimals={false} tick={{ fill: COLORS.text, fontSize: 12, opacity: 0.55 }} axisLine={false} tickLine={false} />
-                <YAxis
-                  type="category"
-                  dataKey="name"
-                  width={96}
-                  tick={{ fill: COLORS.text, fontSize: 12, opacity: 0.55 }}
-                  axisLine={false}
-                  tickLine={false}
-                />
-                <Tooltip content={<ChartTooltip />} cursor={{ fill: RGBA.blush05 }} />
-                <Bar dataKey="value" radius={[0, 8, 8, 0]} maxBarSize={28}>
-                  {businessChart.map((entry, index) => (
-                    <Cell key={entry.stage} fill={BUSINESS_COLORS[index % BUSINESS_COLORS.length]} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            <div className="dash-chart-body">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={businessChart}
+                  layout="vertical"
+                  margin={{ top: 4, right: 16, left: 8, bottom: 4 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke={COLORS.lightBlue} horizontal={false} />
+                  <XAxis type="number" allowDecimals={false} tick={{ fill: COLORS.text, fontSize: 12, opacity: 0.55 }} axisLine={false} tickLine={false} />
+                  <YAxis
+                    type="category"
+                    dataKey="name"
+                    width={96}
+                    tick={{ fill: COLORS.text, fontSize: 12, opacity: 0.55 }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <Tooltip content={<ChartTooltip />} cursor={{ fill: RGBA.blush05 }} />
+                  <Bar dataKey="value" radius={[0, 8, 8, 0]} maxBarSize={28}>
+                    {businessChart.map((entry, index) => (
+                      <Cell key={entry.stage} fill={BUSINESS_COLORS[index % BUSINESS_COLORS.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           )}
         </article>
       </div>

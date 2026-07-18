@@ -7,6 +7,7 @@ import { COLORS, GRADIENT, RGBA } from '../../../lib/colors';
 import IndividualSearchPanel from '../../../components/IndividualSearchPanel';
 import DotScrollArea from '../../../components/DotScrollArea';
 import SearchableFilterSelect from '../../../components/SearchableFilterSelect';
+import MenuSelect from '../../../components/MenuSelect';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   API_CACHE_KEYS,
@@ -33,7 +34,7 @@ const SORT_OPTIONS = [
   { value: 'name_asc', label: 'Name A → Z' },
   { value: 'name_desc', label: 'Name Z → A' },
   { value: 'company_asc', label: 'Company A → Z' },
-  { value: 'status', label: 'Outreach status' },
+  { value: 'company_desc', label: 'Company Z → A' },
 ];
 
 /** Hardcoded Job Seeker draft for manual intake-funnel QA (matches DB seed). */
@@ -137,11 +138,23 @@ function resolveLeadLocation(lead) {
 /** Prefer a clean employer; never show LinkedIn Experience dumps as company. */
 function displayCompanyOrExperience(lead) {
   const company = String(lead?.company || '').trim();
-  if (company && company.length <= 60 && !/\b(present|years?|months?|sep|oct|nov|dec|jan|feb|mar|apr|may|jun|jul|aug)\b/i.test(company) && (company.match(/\./g) || []).length < 2) {
+  // Show short org names even with initials ("J.P. Morgan") or "Inc.".
+  // Only hide obvious Experience dumps (dates / tenure / multi-sentence blobs).
+  if (
+    company
+    && company.length <= 80
+    && !/\b(present|\d+\s*(years?|months?)|experience|education)\b/i.test(company)
+    && !/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{4}\b/i.test(company)
+  ) {
     return company;
   }
   const experience = String(lead?.past_experience || '').trim();
-  if (experience && experience.length <= 80 && (experience.match(/\./g) || []).length < 2) {
+  if (
+    experience
+    && experience.length <= 80
+    && !/\b(present|\d+\s*(years?|months?))\b/i.test(experience)
+    && (experience.match(/\./g) || []).length < 2
+  ) {
     return experience;
   }
   return 'Add company';
@@ -197,26 +210,172 @@ function clearLegacyFilterStorage() {
   }
 }
 
-/** Keep search-query role/location as the user typed them (light cleanup only). */
+/** Keep search-query role as one option across plurals / -ing variants. */
+function stemRoleToken(token) {
+  const t = String(token || '').toLowerCase();
+  if (t.length <= 3) return t;
+  if (t.endsWith('ies') && t.length > 4) return `${t.slice(0, -3)}y`;
+  if (t.endsWith('ing') && t.length > 5) {
+    const base = t.slice(0, -3);
+    // engineering → engineer, accounting stays unless it already looks like a person-noun
+    if (/(eer|er|or|ist|ant|ian)$/.test(base)) return base;
+  }
+  if (/(ses|xes|zes|ches|shes)$/.test(t) && t.length > 4) return t.slice(0, -2);
+  if (t.endsWith('s') && !t.endsWith('ss') && t.length > 3) return t.slice(0, -1);
+  return t;
+}
+
+function roleCanonicalKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean)
+    .map(stemRoleToken)
+    .join(' ');
+}
+
+function titleCaseRole(value) {
+  return String(value || '')
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+}
+
 function normalizeRoleOption(value) {
   const text = String(value || '').trim().replace(/\s+/g, ' ');
   if (text.length < 2 || text.length > 80) return '';
   if (/^add /i.test(text)) return '';
+  const key = roleCanonicalKey(text);
+  if (!key) return '';
+  // Display the stemmed form so "engineers" / "engineering" collapse to "Software Engineer"
+  return titleCaseRole(key);
+}
+
+/** City/region key: first place name, drop admin fluff so variants collapse. */
+function locationPrimaryName(value) {
+  let text = String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[|/]+/g, ',')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+
+  // Prefer the locality before country/state qualifiers.
+  text = text.split(',')[0].trim();
+  text = text
+    .replace(/\b(capital territory|metropolitan area|metro area|greater|area|region|province|district|county|territory|city of)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   return text;
+}
+
+function locationCanonicalKey(value) {
+  return locationPrimaryName(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function titleCaseLocation(value) {
+  const known = { usa: 'USA', uk: 'UK', uae: 'UAE', nyc: 'NYC' };
+  return String(value || '')
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => {
+      const lower = word.toLowerCase();
+      if (known[lower]) return known[lower];
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(' ');
 }
 
 function normalizeLocationOption(value) {
   const text = String(value || '').trim().replace(/\s+/g, ' ');
   if (text.length < 2 || text.length > 80) return '';
   if (/^add /i.test(text)) return '';
-  return text;
+  const primary = locationPrimaryName(text);
+  if (primary.length < 2 || primary.length > 80) return '';
+  return titleCaseLocation(primary);
+}
+
+function optionIdentityKey(value, normalizer) {
+  if (normalizer === normalizeRoleOption) return roleCanonicalKey(value);
+  if (normalizer === normalizeLocationOption) return locationCanonicalKey(value);
+  return String(value || '').toLowerCase();
 }
 
 function addUniqueOption(options, value, normalizer = (v) => String(v || '').trim()) {
   const next = normalizer(value);
   if (!next) return options;
-  if (options.some((item) => item.toLowerCase() === next.toLowerCase())) return options;
+  const nextKey = optionIdentityKey(next, normalizer);
+  if (!nextKey) return options;
+
+  const existingIdx = options.findIndex(
+    (item) => optionIdentityKey(item, normalizer) === nextKey,
+  );
+  if (existingIdx >= 0) {
+    // Prefer the shorter city-only label when collapsing "Islamabad, Pakistan".
+    if (next.length < String(options[existingIdx] || '').length) {
+      const copy = [...options];
+      copy[existingIdx] = next;
+      return copy.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    }
+    return options;
+  }
   return [...options, next].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+function mergeOptionLists(existing, incoming, normalizer) {
+  let next = existing;
+  for (const value of incoming) {
+    next = addUniqueOption(next, value, normalizer);
+  }
+  return next;
+}
+
+/** Split scrape display queries like "Insurance agents in Chicago" into role + location. */
+function parseSearchQueryParts(query) {
+  const text = String(query || '').trim().replace(/\s+/g, ' ');
+  if (!text) return { role: '', location: '' };
+  const lower = text.toLowerCase();
+  const marker = ' in ';
+  const idx = lower.lastIndexOf(marker);
+  if (idx > 0) {
+    return {
+      role: normalizeRoleOption(text.slice(0, idx)),
+      location: normalizeLocationOption(text.slice(idx + marker.length)),
+    };
+  }
+  return { role: normalizeRoleOption(text), location: '' };
+}
+
+/** Build filter choices from the role/location used in past searches (source_query). */
+function collectFilterOptionsFromLeads(leads) {
+  const roles = [];
+  const locations = [];
+  const seenQueries = new Set();
+
+  for (const lead of leads || []) {
+    const query = String(lead?.source_query || lead?.search_prompt || '').trim();
+    if (!query || /^funnel test/i.test(query)) continue;
+    const key = query.toLowerCase();
+    if (seenQueries.has(key)) continue;
+    seenQueries.add(key);
+
+    const parts = parseSearchQueryParts(query);
+    if (parts.role) roles.push(parts.role);
+    if (parts.location) locations.push(parts.location);
+  }
+
+  return { roles, locations };
 }
 
 function pushRecentOption(recents, value, normalizer) {
@@ -228,31 +387,35 @@ function pushRecentOption(recents, value, normalizer) {
 
 function leadMatchesRoleFilter(lead, roleFilter) {
   if (!roleFilter || roleFilter === 'all') return true;
-  const needle = roleFilter.toLowerCase();
-  const haystack = [
+  const needle = roleCanonicalKey(roleFilter);
+  if (!needle) return true;
+  const haystack = roleCanonicalKey([
     lead.role,
     lead.headline,
     lead.search_prompt,
     lead.source_query,
   ]
     .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
+    .join(' '));
   return haystack.includes(needle);
 }
 
 function leadMatchesLocationFilter(lead, locationFilter) {
   if (!locationFilter || locationFilter === 'all') return true;
-  const needle = locationFilter.toLowerCase();
-  const location = resolveLeadLocation(lead).toLowerCase();
-  if (location && location.includes(needle.split(',')[0].trim())) return true;
-  const haystack = [lead.location, lead.source_query, lead.search_prompt]
-    .filter(Boolean)
-    .join(' ')
-    .toLowerCase();
-  return haystack.includes(needle) || needle.split(',').some((part) => {
-    const token = part.trim();
-    return token.length >= 3 && haystack.includes(token);
+  const needle = locationCanonicalKey(locationFilter);
+  if (!needle) return true;
+
+  const queryParts = parseSearchQueryParts(lead.source_query || lead.search_prompt || '');
+  const blobs = [
+    queryParts.location,
+    resolveLeadLocation(lead),
+    lead.location,
+  ].filter(Boolean);
+
+  return blobs.some((blob) => {
+    const key = locationCanonicalKey(blob);
+    if (!key) return false;
+    return key === needle || key.includes(needle) || needle.includes(key);
   });
 }
 
@@ -366,11 +529,48 @@ function RecruitmentWorkspaceContent() {
 
   useEffect(() => {
     clearLegacyFilterStorage();
-    setRoleOptions(loadFilterOptions(FILTER_ROLES_KEY).map(normalizeRoleOption).filter(Boolean));
-    setLocationOptions(loadFilterOptions(FILTER_LOCATIONS_KEY).map(normalizeLocationOption).filter(Boolean));
-    setRecentRoles(loadFilterOptions(FILTER_RECENT_ROLES_KEY).map(normalizeRoleOption).filter(Boolean).slice(0, MAX_RECENT_FILTERS));
-    setRecentLocations(loadFilterOptions(FILTER_RECENT_LOCATIONS_KEY).map(normalizeLocationOption).filter(Boolean).slice(0, MAX_RECENT_FILTERS));
+    setRoleOptions(
+      loadFilterOptions(FILTER_ROLES_KEY).reduce(
+        (acc, value) => addUniqueOption(acc, value, normalizeRoleOption),
+        [],
+      ),
+    );
+    setLocationOptions(
+      loadFilterOptions(FILTER_LOCATIONS_KEY).reduce(
+        (acc, value) => addUniqueOption(acc, value, normalizeLocationOption),
+        [],
+      ),
+    );
+    setRecentRoles(
+      loadFilterOptions(FILTER_RECENT_ROLES_KEY)
+        .reduce((acc, value) => addUniqueOption(acc, value, normalizeRoleOption), [])
+        .slice(0, MAX_RECENT_FILTERS),
+    );
+    setRecentLocations(
+      loadFilterOptions(FILTER_RECENT_LOCATIONS_KEY)
+        .reduce((acc, value) => addUniqueOption(acc, value, normalizeLocationOption), [])
+        .slice(0, MAX_RECENT_FILTERS),
+    );
   }, []);
+
+  // Keep Role / Location dropdowns filled from searches already in the CRM,
+  // not only from localStorage of the current browser session.
+  useEffect(() => {
+    if (!Array.isArray(leads) || leads.length === 0) return;
+    const fromLeads = collectFilterOptionsFromLeads(leads);
+    if (fromLeads.roles.length === 0 && fromLeads.locations.length === 0) return;
+
+    setRoleOptions((prev) => {
+      const next = mergeOptionLists(prev, fromLeads.roles, normalizeRoleOption);
+      if (next !== prev) saveFilterOptions(FILTER_ROLES_KEY, next);
+      return next;
+    });
+    setLocationOptions((prev) => {
+      const next = mergeOptionLists(prev, fromLeads.locations, normalizeLocationOption);
+      if (next !== prev) saveFilterOptions(FILTER_LOCATIONS_KEY, next);
+      return next;
+    });
+  }, [leads]);
 
   const rememberRoleOption = useCallback((value) => {
     const normalized = normalizeRoleOption(value);
@@ -1043,7 +1243,6 @@ function RecruitmentWorkspaceContent() {
       return true;
     });
 
-    const statusRank = { draft: 0, sent: 1, failed: 2 };
     const sorted = [...filtered];
 
     sorted.sort((a, b) => {
@@ -1063,11 +1262,8 @@ function RecruitmentWorkspaceContent() {
           return (b.name || '').localeCompare(a.name || '', undefined, { sensitivity: 'base' });
         case 'company_asc':
           return (a.company || '').localeCompare(b.company || '', undefined, { sensitivity: 'base' });
-        case 'status': {
-          const aStatus = statusRank[a.latest_draft?.status || 'draft'] ?? 0;
-          const bStatus = statusRank[b.latest_draft?.status || 'draft'] ?? 0;
-          return aStatus - bStatus || new Date(b.created_at || 0) - new Date(a.created_at || 0);
-        }
+        case 'company_desc':
+          return (b.company || '').localeCompare(a.company || '', undefined, { sensitivity: 'base' });
         case 'newest':
         default:
           return new Date(b.created_at || 0) - new Date(a.created_at || 0);
@@ -1403,24 +1599,22 @@ function RecruitmentWorkspaceContent() {
               const keys = new Set(
                 (run?.leads || []).map(leadIdentityKey).filter(Boolean),
               );
-              setSearchRun({ query: run?.query || '', keys, count: keys.size });
+              const role = run?.role ? rememberRoleOption(run.role) : null;
+              const location = run?.location ? rememberLocationOption(run.location) : null;
+              setSearchRun({
+                query: run?.query || '',
+                keys,
+                count: keys.size,
+                role: role || null,
+                location: location || null,
+              });
               // Land on the results of the run just finished, not the whole list.
               setOnlyThisSearch(keys.size > 0);
               setTextSearch('');
               setStatusFilter('all');
-              if (run?.role) {
-                const role = rememberRoleOption(run.role);
-                setRoleFilter(role || 'all');
-              } else {
-                setRoleFilter('all');
-              }
-              if (run?.location) {
-                const location = rememberLocationOption(run.location);
-                setLocationFilter(location || 'all');
-              } else {
-                setLocationFilter('all');
-              }
-              setListFiltersOpen(true);
+              setRoleFilter(role || 'all');
+              setLocationFilter(location || 'all');
+              setListFiltersOpen(false);
               setListPage(1);
               invalidateApiCache([API_CACHE_KEYS.avatar12Leads, API_CACHE_KEYS.funnel]);
               fetchLeads({ force: true });
@@ -1454,55 +1648,60 @@ function RecruitmentWorkspaceContent() {
                   No matches from your latest search for <strong>{searchRun.query}</strong>
                 </p>
               ) : (
-                <>
-                  <div className="search-run-filter__copy">
-                    <span className="search-run-filter__eyebrow">
-                      {onlyThisSearch ? 'Results from your latest search' : 'Latest search'}
-                    </span>
-                    <button
-                      type="button"
-                      className={`search-run-filter__chip${onlyThisSearch ? ' is-on' : ''}`}
-                      onClick={() => setOnlyThisSearch((prev) => !prev)}
-                      aria-pressed={onlyThisSearch}
-                      title={onlyThisSearch ? 'Show all drafts' : 'Show only this search'}
-                    >
+                <div className="search-run-filter__copy">
+                  <span className="search-run-filter__eyebrow">
+                    Results from your latest search
+                  </span>
+                  <div className="search-run-filter__row">
+                    <div className="search-run-filter__chip is-on" aria-label={`Latest search: ${searchRun.query}`}>
                       <span className="search-run-filter__chip-query">{searchRun.query}</span>
                       <span className="search-run-filter__chip-count">
                         {searchRun.count} lead{searchRun.count === 1 ? '' : 's'}
                       </span>
-                    </button>
+                    </div>
+                    <div className="search-run-filter__actions">
+                      <button
+                        type="button"
+                        className="search-run-filter__toggle"
+                        onClick={() => {
+                          setSearchRun(null);
+                          setOnlyThisSearch(false);
+                          setRoleFilter('all');
+                          setLocationFilter('all');
+                        }}
+                      >
+                        Show all
+                      </button>
+                      <button
+                        type="button"
+                        className="search-run-filter__dismiss"
+                        onClick={() => {
+                          setSearchRun(null);
+                          setOnlyThisSearch(false);
+                          setRoleFilter('all');
+                          setLocationFilter('all');
+                        }}
+                        aria-label="Dismiss search filter"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
                   </div>
-                </>
+                </div>
               )}
 
-              <div className="search-run-filter__actions">
-                {searchRun.count > 0 && onlyThisSearch && (
+              {searchRun.count === 0 && (
+                <div className="search-run-filter__actions">
                   <button
                     type="button"
-                    className="search-run-filter__toggle"
-                    onClick={() => setOnlyThisSearch(false)}
+                    className="search-run-filter__dismiss"
+                    onClick={() => { setSearchRun(null); setOnlyThisSearch(false); }}
+                    aria-label="Dismiss search filter"
                   >
-                    Show all
+                    <X size={14} />
                   </button>
-                )}
-                {searchRun.count > 0 && !onlyThisSearch && (
-                  <button
-                    type="button"
-                    className="search-run-filter__toggle"
-                    onClick={() => setOnlyThisSearch(true)}
-                  >
-                    This search only
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="search-run-filter__dismiss"
-                  onClick={() => { setSearchRun(null); setOnlyThisSearch(false); }}
-                  aria-label="Dismiss search filter"
-                >
-                  <X size={14} />
-                </button>
-              </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1547,38 +1746,33 @@ function RecruitmentWorkspaceContent() {
                 )}
               </button>
 
-              <div className="individual-list-sort-wrap">
-                <select
-                  className="individual-list-sort"
-                  value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value)}
-                  aria-label={`Sort drafts: ${SORT_OPTIONS.find((option) => option.value === sortBy)?.label || 'Newest first'}`}
-                  title={SORT_OPTIONS.find((option) => option.value === sortBy)?.label || 'Newest first'}
-                >
-                  {SORT_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-                <ArrowUpDown size={16} className="individual-list-sort-wrap__icon" aria-hidden="true" />
-              </div>
+              <MenuSelect
+                className="individual-list-sort-menu"
+                ariaLabel={`Sort drafts: ${SORT_OPTIONS.find((option) => option.value === sortBy)?.label || 'Newest first'}`}
+                value={sortBy}
+                options={SORT_OPTIONS}
+                onChange={setSortBy}
+                neutralValue="newest"
+                iconOnly
+                triggerIcon={<ArrowUpDown size={16} aria-hidden="true" />}
+              />
             </div>
           </div>
 
           {listFiltersOpen && (
           <div className="individual-list-filters-panel">
             <div className="individual-list-filters-grid">
-              <label className="individual-list-filter-field">
-                <span>Outreach</span>
-                <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
-                  aria-label="Filter by outreach status"
-                >
-                  <option value="all">All outreach</option>
-                  <option value="draft">Not sent</option>
-                  <option value="sent">Sent</option>
-                </select>
-              </label>
+              <MenuSelect
+                label="Outreach"
+                ariaLabel="Filter by outreach status"
+                value={statusFilter}
+                options={[
+                  { value: 'all', label: 'All outreach' },
+                  { value: 'draft', label: 'Not sent' },
+                  { value: 'sent', label: 'Sent' },
+                ]}
+                onChange={setStatusFilter}
+              />
 
               <SearchableFilterSelect
                 label="Role"
@@ -1611,7 +1805,7 @@ function RecruitmentWorkspaceContent() {
 
             {(roleOptions.length === 0 && locationOptions.length === 0) && (
               <p className="individual-list-filters-hint">
-                Role and location options appear from the role and location you type when you run a search.
+                Role and location options appear after you run a search, or from past search queries on your leads.
               </p>
             )}
 
@@ -1936,7 +2130,10 @@ function RecruitmentWorkspaceContent() {
                           <div className="individual-lead-profile__fact">
                             <dt>Company</dt>
                             <dd className={isCompanyOrExperienceMissing(selectedLeadDetails) ? 'is-missing' : undefined}>
-                              {displayCompanyOrExperience(selectedLeadDetails)}
+                              <span>{displayCompanyOrExperience(selectedLeadDetails)}</span>
+                              <span className="individual-lead-profile__fact-note">
+                                May be a past employer from public results, not always the current one. Confirm on LinkedIn when it matters.
+                              </span>
                             </dd>
                           </div>
                           {selectedLeadDetails.school && (
@@ -1955,14 +2152,24 @@ function RecruitmentWorkspaceContent() {
                             <dt>Email</dt>
                             <dd className={!(selectedLeadDetails.contact_email || '').trim() ? 'is-missing' : undefined}>
                               {(selectedLeadDetails.contact_email || '').trim() ? (
-                                <a
-                                  href={`mailto:${selectedLeadDetails.contact_email.trim()}`}
-                                  className="individual-lead-profile__link"
-                                >
-                                  {selectedLeadDetails.contact_email.trim()}
-                                </a>
+                                <>
+                                  <a
+                                    href={`mailto:${selectedLeadDetails.contact_email.trim()}`}
+                                    className="individual-lead-profile__link"
+                                  >
+                                    {selectedLeadDetails.contact_email.trim()}
+                                  </a>
+                                  <span className="individual-lead-profile__fact-note">
+                                    Unconfirmed public find. Verify before you send.
+                                  </span>
+                                </>
                               ) : (
-                                'Not found yet'
+                                <>
+                                  <span>Not found yet</span>
+                                  <span className="individual-lead-profile__fact-note">
+                                    When we find a public email, it is unconfirmed. Always verify before outreach.
+                                  </span>
+                                </>
                               )}
                             </dd>
                           </div>
@@ -2017,39 +2224,6 @@ function RecruitmentWorkspaceContent() {
                       <p className="individual-compose-editor__hint">
                         Ask them to book a meeting. The link in the draft is their meeting booking page.
                       </p>
-                      {(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft') !== 'sent' && (
-                        <div className="individual-compose-editor__actions">
-                          {editingDraft ? (
-                            <>
-                              <button
-                                type="button"
-                                className="individual-compose-editor__edit-btn individual-compose-editor__edit-btn--ghost"
-                                onClick={cancelEditingDraft}
-                                disabled={savingDraft}
-                              >
-                                Cancel
-                              </button>
-                              <button
-                                type="button"
-                                className="individual-compose-editor__edit-btn"
-                                onClick={finishEditingDraft}
-                                disabled={savingDraft}
-                              >
-                                {savingDraft ? 'Saving…' : 'Save message'}
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              type="button"
-                              className="individual-compose-editor__edit-btn"
-                              onClick={startEditingDraft}
-                            >
-                              <Pencil size={14} />
-                              Edit message
-                            </button>
-                          )}
-                        </div>
-                      )}
                     </div>
 
                     <DotScrollArea
@@ -2066,40 +2240,70 @@ function RecruitmentWorkspaceContent() {
                         aria-label="Outreach draft"
                       />
                     </DotScrollArea>
+                  </div>
 
-                    <div className="individual-compose-footer" style={{ flexWrap: 'wrap', gap: '12px' }}>
-                      <span className="individual-compose-footer__count">
-                        {draftMessage.length} characters
-                      </span>
-                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-                        {(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft') !== 'sent' && (
-                          <button
-                            type="button"
-                            className="chip-fallback-btn"
-                            onClick={handleCopyDraft}
-                            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                          >
-                            {draftCopied ? <Check size={14} /> : <Copy size={14} />}
-                            {draftCopied ? 'Copied' : 'Copy message'}
-                          </button>
-                        )}
-                        {(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft') === 'sent' ? (
-                          <span className="individual-compose-footer__sent">
-                            <CheckCircle2 size={16} />
-                            Marked as sent
-                          </span>
+                  <div className="individual-compose-footer">
+                    <span className="individual-compose-footer__count">
+                      {draftMessage.length} characters
+                    </span>
+                    <div className="individual-compose-footer__actions">
+                      {(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft') !== 'sent' && (
+                        editingDraft ? (
+                          <>
+                            <button
+                              type="button"
+                              className="individual-compose-editor__edit-btn individual-compose-editor__edit-btn--ghost"
+                              onClick={cancelEditingDraft}
+                              disabled={savingDraft}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              className="individual-compose-editor__edit-btn"
+                              onClick={finishEditingDraft}
+                              disabled={savingDraft}
+                            >
+                              {savingDraft ? 'Saving…' : 'Save message'}
+                            </button>
+                          </>
                         ) : (
                           <button
                             type="button"
-                            className="btn-primary individual-compose-footer__send"
-                            onClick={requestMarkAsSent}
-                            disabled={markingSent}
+                            className="individual-compose-editor__edit-btn"
+                            onClick={startEditingDraft}
                           >
-                            <CheckCircle2 size={14} />
-                            Mark as sent
+                            <Pencil size={14} />
+                            Edit message
                           </button>
-                        )}
-                      </div>
+                        )
+                      )}
+                      {(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft') !== 'sent' && (
+                        <button
+                          type="button"
+                          className="chip-fallback-btn individual-compose-footer__copy"
+                          onClick={handleCopyDraft}
+                        >
+                          {draftCopied ? <Check size={14} /> : <Copy size={14} />}
+                          {draftCopied ? 'Copied' : 'Copy message'}
+                        </button>
+                      )}
+                      {(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft') === 'sent' ? (
+                        <span className="individual-compose-footer__sent">
+                          <CheckCircle2 size={16} />
+                          Marked as sent
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn-primary individual-compose-footer__send"
+                          onClick={requestMarkAsSent}
+                          disabled={markingSent}
+                        >
+                          <CheckCircle2 size={14} />
+                          Mark as sent
+                        </button>
+                      )}
                     </div>
                   </div>
 

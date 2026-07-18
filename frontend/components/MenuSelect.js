@@ -16,6 +16,11 @@ export default function MenuSelect({
   ariaLabel,
   className = '',
   disabled = false,
+  /** Value that should not get the "has-value" accent (e.g. all / newest). */
+  neutralValue = 'all',
+  /** When set, trigger shows only this icon (no label / chevron). */
+  triggerIcon = null,
+  iconOnly = false,
 }) {
   const [open, setOpen] = useState(false);
   const [panelStyle, setPanelStyle] = useState(null);
@@ -32,8 +37,11 @@ export default function MenuSelect({
     if (!trigger) return;
 
     const rect = trigger.getBoundingClientRect();
-    const width = Math.max(rect.width, 168);
     const viewportPad = 8;
+    const width = Math.min(
+      Math.max(rect.width, iconOnly ? 200 : 168),
+      window.innerWidth - viewportPad * 2,
+    );
     const estimatedHeight = Math.min(280, 12 + options.length * 36);
     const spaceBelow = window.innerHeight - rect.bottom - viewportPad;
     const openUp = spaceBelow < estimatedHeight && rect.top > spaceBelow;
@@ -42,6 +50,7 @@ export default function MenuSelect({
     if (left + width > window.innerWidth - viewportPad) {
       left = Math.max(viewportPad, window.innerWidth - width - viewportPad);
     }
+    if (left < viewportPad) left = viewportPad;
 
     setPanelStyle({
       position: 'fixed',
@@ -70,7 +79,7 @@ export default function MenuSelect({
       window.removeEventListener('resize', onReposition);
       window.removeEventListener('scroll', onReposition, true);
     };
-  }, [open, options.length]);
+  }, [open, options.length, iconOnly]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -129,12 +138,12 @@ export default function MenuSelect({
 
   return (
     <div
-      className={`searchable-filter menu-select${open ? ' is-open' : ''}${value ? ' has-value' : ''}${className ? ` ${className}` : ''}`}
+      className={`searchable-filter menu-select${open ? ' is-open' : ''}${value && value !== neutralValue ? ' has-value' : ''}${iconOnly ? ' menu-select--icon-only' : ''}${className ? ` ${className}` : ''}`}
       ref={rootRef}
       onClick={(event) => event.stopPropagation()}
       onMouseDown={(event) => event.stopPropagation()}
     >
-      {label ? <span className="searchable-filter__label">{label}</span> : null}
+      {label && !iconOnly ? <span className="searchable-filter__label">{label}</span> : null}
       <button
         ref={triggerRef}
         type="button"
@@ -143,16 +152,23 @@ export default function MenuSelect({
         aria-expanded={open}
         aria-controls={listId}
         aria-label={ariaLabel || label || 'Select option'}
+        title={ariaLabel || selectedLabel}
         disabled={disabled}
         onClick={(event) => {
           event.stopPropagation();
           setOpen((prev) => !prev);
         }}
       >
-        <span className="searchable-filter__value" title={selectedLabel}>
-          {selectedLabel}
-        </span>
-        <ChevronsUpDown size={14} aria-hidden="true" />
+        {iconOnly && triggerIcon ? (
+          triggerIcon
+        ) : (
+          <>
+            <span className="searchable-filter__value" title={selectedLabel}>
+              {selectedLabel}
+            </span>
+            <ChevronsUpDown size={14} aria-hidden="true" />
+          </>
+        )}
       </button>
       {panel}
     </div>

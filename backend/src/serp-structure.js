@@ -93,6 +93,9 @@ function isOwner(text) {
  * it is never truncated and never mistakes a school for an employer. The card
  * omits fields on some profiles, so identify the location by shape instead of
  * trusting a fixed index.
+ *
+ * When the card has no employer, leave company null. Snippet prose is too
+ * variable for keyword/regex rules — enrichLeadFields (AI) fills it dynamically.
  */
 function factsFromExtensions(extensions) {
   const values = (Array.isArray(extensions) ? extensions : [])
@@ -109,32 +112,6 @@ function factsFromExtensions(extensions) {
     role: rest[0] ?? null,
     company: rest.length > 1 ? cleanCompanyCandidate(rest[rest.length - 1]) : null,
   };
-}
-
-/**
- * Light optional headline hint: "Intern at Acme". Odd / Experience layouts are
- * left to enrichLeadFields (AI) so we do not hardcode every Google snippet shape.
- */
-function matchCompanyAfterAt(text) {
-  const source = String(text ?? '');
-  const pattern = /\bat\s+([A-Z][^|·•.]{1,60})/g;
-
-  for (const match of source.matchAll(pattern)) {
-    const before = source.slice(0, match.index);
-    const tail = before.slice(-48);
-    if (EDUCATION_RE.test(tail.split(/[|·•]/).pop() ?? '')) continue;
-    if (/\b(student|studying|alumni|alumnus|alumna|undergraduate)\s+$/i.test(tail)) continue;
-
-    const candidate = String(match[1])
-      .split(/\s+[-–—]\s+/)[0]
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!candidate || EDUCATION_RE.test(candidate)) continue;
-    const cleaned = cleanCompanyCandidate(candidate);
-    if (cleaned) return cleaned;
-  }
-
-  return null;
 }
 
 function fitSourceFromUrl(url) {
@@ -246,13 +223,9 @@ export function structureSerpLeads(rawItems, { avatarType, searchPrompt, roleTer
     // we can infer from the snippet prose.
     const facts = factsFromExtensions(item.extensions);
 
-    // Company: LinkedIn card first, then a light "at Company" headline hint.
-    // School / internship / odd layouts → enrichLeadFields (AI), any structure.
-    const company =
-      facts.company
-      || matchCompanyAfterAt(headline)
-      || matchCompanyAfterAt(item.snippet)
-      || null;
+    // Company only from LinkedIn's rich card. Snippet layouts vary by career and
+    // country — enrichLeadFields (AI) fills blanks dynamically, no keyword rules.
+    const company = facts.company || null;
 
     const snippet = item.snippet || '';
     // The lane note was folded into the snippet as "[...]" by serpResultsToRawItems.
@@ -273,7 +246,7 @@ export function structureSerpLeads(rawItems, { avatarType, searchPrompt, roleTer
       // Fields taken from LinkedIn's card are verified; anything inferred from
       // snippet prose stays flagged as weak so the CRM never shows a guess as fact.
       fieldSource: {
-        company: facts.company ? 'linkedin_card' : company ? 'snippet' : null,
+        company: facts.company ? 'linkedin_card' : null,
         location: facts.location ? 'linkedin_card' : 'snippet',
       },
       link,

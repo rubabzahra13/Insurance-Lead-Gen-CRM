@@ -9,19 +9,19 @@ export function toFriendlyTrace(raw) {
     return 'AI is building custom searches and a checklist from your query';
   }
   if (raw.includes('AI-tailored search lanes')) {
-    return 'AI wrote custom Google searches for your query';
+    return 'AI wrote custom searches for your query';
   }
   if (raw.includes('Resolving location') || raw.includes('Places:') || raw.includes('place candidates')) {
-    return 'Resolving location (Google Places first, AI if needed)';
+    return 'Resolving location from your selection';
   }
   if (raw.includes('AI location fallback')) {
-    return 'Places had no match — AI is resolving the location';
+    return 'Places had no match. AI is resolving the location';
   }
   if (raw.includes('none in query (ignored AI guess)')) {
-    return 'No location in your query — searching without a place filter';
+    return 'No location in your query. Searching without a place filter';
   }
-  if (raw.includes('Engine: Google search') || raw.includes('Engine: SERP')) {
-    return 'Using Google search with AI filtering';
+  if (raw.includes('Engine: Google search') || raw.includes('Engine: SERP') || raw.includes('Engine: Profile search')) {
+    return 'Using profile search with AI filtering';
   }
   if (raw.includes('AI quality filter') || raw.includes('LLM filter')) {
     return 'AI is reviewing candidates against the checklist';
@@ -32,8 +32,12 @@ export function toFriendlyTrace(raw) {
   if (raw.includes('Stage 1') || raw.includes('Classification')) {
     return 'Understanding whether this search targets job seekers or job upgraders';
   }
-  if (raw.includes('Starting Google search') || raw.includes('Sourcing individual')) {
-    return 'Searching Google for matching LinkedIn profiles';
+  if (
+    raw.includes('Starting Google search')
+    || raw.includes('Starting profile search')
+    || raw.includes('Sourcing individual')
+  ) {
+    return 'Searching for matching LinkedIn profiles';
   }
   if (raw.startsWith('[SUCCESS] Classification')) {
     return 'Lead type identified successfully';
@@ -48,7 +52,7 @@ export function toFriendlyTrace(raw) {
     return `Reasoning: ${raw.replace('[INFO] Claude Reasoning: ', '')}`;
   }
   if (raw.startsWith('[LOG] Search job created:') || raw.startsWith('[LOG] Scraper job created:')) {
-    return 'Search queued — gathering Google results';
+    return 'Search queued. Gathering profile results';
   }
   if (raw.startsWith('[LOG] Listening for live') || raw.startsWith('[LOG] Listening to SSE')) {
     return 'Connected to live progress';
@@ -85,10 +89,19 @@ export function toFriendlyTrace(raw) {
     return raw.replace('[SCRAPER] ', '');
   }
   if (raw.startsWith('→ Pipeline Step Start:')) {
-    return `Now running: ${raw.replace('→ Pipeline Step Start: ', '')}`;
+    const step = raw
+      .replace('→ Pipeline Step Start: ', '')
+      .replace(/Fast Google search/i, 'Profile search')
+      .replace(/Google search/i, 'Profile search');
+    return `Now running: ${step}`;
   }
   if (raw.startsWith('✓ Pipeline Step Done:')) {
-    return `Completed: ${raw.replace('✓ Pipeline Step Done: ', '').replace(/\s*\(\d+s\)$/, '')}`;
+    const step = raw
+      .replace('✓ Pipeline Step Done: ', '')
+      .replace(/\s*\(\d+s\)$/, '')
+      .replace(/Fast Google search/i, 'Profile search')
+      .replace(/Google search/i, 'Profile search');
+    return `Completed: ${step}`;
   }
   if (raw.startsWith('[INFO]')) {
     return raw.replace('[INFO] ', '');

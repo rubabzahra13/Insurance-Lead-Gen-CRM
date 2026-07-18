@@ -75,6 +75,11 @@ export function looksLikeExperienceDump(value) {
   return false;
 }
 
+/**
+ * Shape-only company sanitize. No industry/title keyword lists — deciding what
+ * counts as an employer is the AI enricher's job (dynamic per snippet).
+ * Here we only reject values that are structurally unsafe for the CRM.
+ */
 export function cleanCompanyCandidate(value) {
   const text = String(value ?? '')
     .replace(/\s*[|·•].*$/, '')
@@ -85,8 +90,10 @@ export function cleanCompanyCandidate(value) {
   // Checked before trailing punctuation is trimmed, so Google's truncated
   // "Equitable ..." is rejected rather than stored as a half name.
   if (/(\.\.\.|…)$/.test(text)) return null;
-  if (!/^[\p{Lu}\p{N}]/u.test(text)) return null;
-  if (JOB_TITLE_RE.test(text)) return null;
+  // Proper names normally start with a capital, but brands like iBloom / eBay
+  // are real employers on LinkedIn and must not be dropped.
+  if (!/^[\p{Lu}\p{N}]/u.test(text) && !/^[a-z]+[\p{Lu}\p{N}]/u.test(text)) return null;
+  // Schools belong in the school field, not company.
   if (EDUCATION_RE.test(text)) return null;
 
   // Trailing "." is left alone — it is part of "Inc.", "Ltd.", "Co.".
