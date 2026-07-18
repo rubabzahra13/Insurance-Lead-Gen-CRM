@@ -8,11 +8,10 @@ from typing import Any
 
 import httpx
 
-from app.config import load_settings
+from app.db import load_root_env
 
 
 logger = logging.getLogger(__name__)
-load_settings()  # loads .env so OPENAI_* vars are available
 
 OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 
@@ -22,6 +21,7 @@ class LLMResponseError(RuntimeError):
 
 
 def _api_key() -> str:
+    load_root_env()
     key = (os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY") or "").strip()
     if not key:
         raise LLMResponseError("OPENAI_API_KEY is missing or empty.")
@@ -29,6 +29,7 @@ def _api_key() -> str:
 
 
 def _model() -> str:
+    load_root_env()
     return (os.getenv("OPENAI_MODEL") or "").strip() or "gpt-4o-mini"
 
 

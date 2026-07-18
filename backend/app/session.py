@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from functools import lru_cache
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -9,6 +10,7 @@ from sqlalchemy.pool import NullPool
 from app.db import supabase_connection_string
 
 
+@lru_cache(maxsize=1)
 def _create_engine():
     url = supabase_connection_string().replace(
         "postgresql://", "postgresql+psycopg://", 1
@@ -31,5 +33,11 @@ def _create_engine():
     return create_engine(url, **kwargs)
 
 
-engine = _create_engine()
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+@lru_cache(maxsize=1)
+def _session_factory():
+    return sessionmaker(bind=_create_engine(), autoflush=False, autocommit=False)
+
+
+def SessionLocal():
+    """Create a DB session. Engine is built lazily on first use."""
+    return _session_factory()()

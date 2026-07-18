@@ -123,8 +123,45 @@ app.include_router(places_router)
 
 @app.get("/api/health")
 def health():
-    settings = load_settings()
-    return {"ok": True, "openai_model": settings.openai_model}
+    """Liveness check — must not crash the serverless function if secrets are missing."""
+    openai_ok = False
+    openai_model = None
+    openai_error = None
+    try:
+        settings = load_settings()
+        openai_ok = True
+        openai_model = settings.openai_model
+    except Exception as exc:
+        openai_error = str(exc)
+
+    db_ok = False
+    db_error = None
+    try:
+        from sqlalchemy import text
+        from app.session import SessionLocal
+
+        db = SessionLocal()
+        try:
+            db.execute(text("SELECT 1"))
+            db_ok = True
+        finally:
+            db.close()
+    except Exception as exc:
+        db_error = str(exc)
+
+    ok = openai_ok and db_ok
+    payload = {
+        "ok": ok,
+        "openai": {"ok": openai_ok, "model": openai_model},
+        "database": {"ok": db_ok},
+    }
+    if openai_error:
+        payload["openai"]["error"] = openai_error
+    if db_error:
+        payload["database"]["error"] = db_error
+    if openai_ok and openai_model:
+        payload["openai_model"] = openai_model
+    return payload
 
 
 def main() -> None:
