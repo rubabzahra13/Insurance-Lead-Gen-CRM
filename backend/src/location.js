@@ -366,21 +366,26 @@ export function filterLeadsByQueryLocation(leads, query, { onDrop } = {}) {
 
 /**
  * When a lead passed the location filter but has no location field, fill it from
- * the strongest place token found in their own text (or the query place label).
+ * the strongest place token found in their own text, else the query place label.
  */
 export function fillMissingLocations(leads, locationHint) {
-  if (!locationHint?.tokens?.length) return leads;
+  const queryLabel = String(locationHint?.label || '').trim();
+  if (!locationHint?.tokens?.length && !queryLabel) return leads;
 
   return leads.map((lead) => {
     if (lead.location?.trim()) return lead;
     const corpus = leadCorpus(lead);
-    const found = [...locationHint.tokens]
+    const found = [...(locationHint.tokens || [])]
       .filter((token) => token.length >= 4 && corpus.includes(token))
       .sort((a, b) => b.length - a.length);
-    // Only fill when profile text actually mentions a place token — never guess.
-    if (!found.length) return lead;
-    const label = found[0].replace(/\b\w/g, (c) => c.toUpperCase());
-    return { ...lead, location: label };
+    if (found.length) {
+      const label = found[0].replace(/\b\w/g, (c) => c.toUpperCase());
+      return { ...lead, location: label };
+    }
+    if (queryLabel) {
+      return { ...lead, location: queryLabel };
+    }
+    return lead;
   });
 }
 

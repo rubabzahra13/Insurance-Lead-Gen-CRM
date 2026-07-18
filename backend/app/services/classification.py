@@ -22,7 +22,7 @@ def _build_system_prompt() -> str:
     return (
         "You classify an insurance CRM search query into one of three workflows.\n"
         "Avatar 1: open-to-work individuals with insurance or sales experience.\n"
-        "Avatar 2: upgraders at smaller insurance firms.\n"
+        "Avatar 2: individuals changing jobs for better opportunities.\n"
         "Avatar 3: founder-led or small business targets.\n"
         "Return only JSON."
     )
@@ -39,7 +39,7 @@ def _schema() -> dict[str, Any]:
 def _heuristic_classification(query: str) -> dict[str, Any]:
     lower = query.lower()
     business_tokens = ["company", "companies", "business", "founder", "founders", "agency", "firms", "roofing", "shop"]
-    upgrade_tokens = ["upgrade", "bigger team", "larger team", "small firm", "smaller firm", "agency", "carrier"]
+    upgrade_tokens = ["upgrade", "job change", "career move", "better opportunity", "new role", "small firm", "smaller firm", "agency", "carrier"]
     open_to_work_tokens = ["open to work", "open-to-work", "job seeker", "looking for work", "sales pro", "sales professional"]
 
     if any(token in lower for token in business_tokens):

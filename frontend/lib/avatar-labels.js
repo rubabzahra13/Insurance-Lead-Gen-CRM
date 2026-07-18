@@ -10,7 +10,7 @@ export const LEAD_PATH = {
   people: {
     label: 'Job seekers & job upgraders',
     shortLabel: 'Individual leads',
-    description: 'Individuals open to insurance careers or ready to upgrade their role',
+    description: 'Individuals open to insurance careers or changing jobs for better opportunities',
   },
   business: {
     label: 'Founder-led & small businesses',

@@ -106,32 +106,37 @@ def ensure_funnel_test_lead(*, db: Session) -> dict[str, Any]:
 def _avatar_prompt(avatar_type: AvatarType) -> str:
     if avatar_type == AvatarType.avatar1:
         return (
-            "You write personalized outreach emails for Avatar 1 leads: open-to-work insurance or sales professionals.\n"
+            "You write personalized outreach emails for job seekers: open-to-work insurance or sales professionals.\n"
             "Write the message as a real short outreach email:\n"
             "- Open with 'Hi {first_name},' using the lead's REAL first name (parsed from their full name), never a placeholder like {{first_name}}.\n"
             "- Write 2-4 sentences of genuinely personalized body text that references the lead's actual profile data "
             "(their role, company, headline, location, background). Do not use generic filler.\n"
-            "- Include the landing page link provided in the context naturally in the body, e.g. inviting them to "
-            "learn more or book a quick call via the link. The link must appear as a full URL on its own line so it's clearly visible.\n"
+            "- Clearly invite them to book a meeting. The provided link is their meeting booking page. "
+            "Say that in plain language (for example: book a meeting with the link below). "
+            "Put the full URL on its own line so it is clearly visible.\n"
             "- End with a clear, natural sign-off (e.g. 'Best regards,' or 'Looking forward to connecting,' followed by a name like 'Peter' or 'The InsureLead Team').\n"
-            "- Keep the tone warm, human, and direct. This is the entire message body — not a subject line.\n"
+            "- Keep the tone warm, human, and direct. This is the entire message body, not a subject line.\n"
+            "- Never use the word avatar, Avatar 1, or Avatar 2 in the draft or reasoning.\n"
             "Return only a single JSON object with exactly two string keys: draft_message and reasoning.\n"
-            "For reasoning, summarize what we learned about this person from their profile (background, role, and why they fit this lead type). "
+            "For reasoning, summarize what we learned about this person from their profile (background, role, and why they fit as a job seeker). "
             "Use plain sentences. Do not use em dashes."
         )
 
     return (
-        "You write personalized outreach emails for Avatar 2 leads: upgraders at smaller insurance firms who want a bigger team.\n"
+        "You write personalized outreach emails for job upgraders: working professionals changing jobs for better opportunities.\n"
         "Write the message as a real short outreach email:\n"
         "- Open with 'Hi {first_name},' using the lead's REAL first name (parsed from their full name), never a placeholder like {{first_name}}.\n"
         "- Write 2-4 sentences of genuinely personalized body text that references the lead's current role, company, "
-        "and background, framing the opportunity as a step up for someone seeking more scale, support, or growth.\n"
-        "- Include the landing page link provided in the context naturally in the body, e.g. inviting them to "
-        "learn more or book a quick call via the link. The link must appear as a full URL on its own line so it's clearly visible.\n"
+        "and background, framing the opportunity as a better next role for someone open to a career move.\n"
+        "- Clearly invite them to book a meeting. The provided link is their meeting booking page. "
+        "Say that in plain language (for example: book a meeting with the link below). "
+        "Put the full URL on its own line so it is clearly visible.\n"
         "- End with a clear, natural sign-off (e.g. 'Best regards,' or 'Looking forward to connecting,' followed by a name like 'Peter' or 'The InsureLead Team').\n"
-        "- Keep the tone warm, human, and direct. This is the entire message body — not a subject line.\n"
+        "- Keep the tone warm, human, and direct. This is the entire message body, not a subject line.\n"
+        "- Never use the word avatar, Avatar 1, or Avatar 2 in the draft or reasoning.\n"
+        "- Do not mention growing teams, bigger teams, or building a team.\n"
         "Return only a single JSON object with exactly two string keys: draft_message and reasoning.\n"
-        "For reasoning, summarize what we learned about this person from their profile (background, role, and why they fit this lead type). "
+        "For reasoning, summarize what we learned about this person from their profile (background, role, and why they fit as a job upgrader). "
         "Use plain sentences. Do not use em dashes."
     )
 
@@ -155,8 +160,9 @@ def _lead_prompt_context(
     landing_page_url: str | None = None,
 ) -> str:
     first_name = name.split()[0] if name else "there"
+    segment_label = "job seeker" if avatar_type == AvatarType.avatar1 else "job upgrader"
     return (
-        f"Avatar type: {avatar_type.value}\n"
+        f"Lead segment: {segment_label}\n"
         f"Full Name: {name}\n"
         f"First Name (use this for the greeting): {first_name}\n"
         f"Headline: {headline or ''}\n"
@@ -164,11 +170,13 @@ def _lead_prompt_context(
         f"Company: {company or ''}\n"
         f"Location: {location or ''}\n"
         f"Past experience: {past_experience or ''}\n"
-        f"Landing page URL to include in the email body: {landing_page_url or 'N/A'}\n"
+        f"Meeting booking URL to include in the email body: {landing_page_url or 'N/A'}\n"
         "Write the outreach draft email and explain what we learned about this person from their profile.\n"
         "The greeting MUST use the lead's real first name, not a placeholder.\n"
-        "The landing page URL MUST appear in the draft as a full clickable URL.\n"
-        "The draft should sound different for Avatar 1 versus Avatar 2, and should clearly reflect the lead's background.\n"
+        "Invite them to book a meeting. The URL is specifically for booking a meeting.\n"
+        "The meeting booking URL MUST appear in the draft as a full clickable URL on its own line.\n"
+        "The draft should sound different for job seekers versus job upgraders, and should clearly reflect the lead's background.\n"
+        "Never use the word avatar.\n"
         "Do not include markdown, code fences, or any text outside the JSON object."
     )
 
@@ -194,23 +202,23 @@ def _template_avatar_draft(
             f"Hi {first_name},\n\n"
             f"I came across your profile and noticed your work as {role_bit}{company_bit}{location_bit}. "
             "We're connecting with early-career talent who may be exploring stronger insurance or sales opportunities.\n\n"
-            f"If you're open to a quick look, here's more detail:\n{landing}\n\n"
+            f"If you're open to it, book a meeting with this link:\n{landing}\n\n"
             "Best regards,\nThe InsureLead Team"
         )
         reasoning = (
-            f"Template draft for recent-grad / entry-level lead. Role: {role_bit}. "
+            f"Template draft for a job seeker. Role: {role_bit}. "
             "OpenAI was unavailable, so a ready-to-edit message was created instead."
         )
     else:
         body = (
             f"Hi {first_name},\n\n"
             f"I saw your experience as {role_bit}{company_bit}{location_bit} and thought you might be "
-            "open to growing with a stronger team and more support.\n\n"
-            f"Happy to share details here:\n{landing}\n\n"
+            "open to a better next role and stronger opportunities.\n\n"
+            f"Book a meeting with this link if you'd like to talk it through:\n{landing}\n\n"
             "Best regards,\nThe InsureLead Team"
         )
         reasoning = (
-            f"Template draft for upgrader lead. Role: {role_bit}. "
+            f"Template draft for a job upgrader. Role: {role_bit}. "
             "OpenAI was unavailable, so a ready-to-edit message was created instead."
         )
     return {
@@ -338,6 +346,8 @@ def persist_avatar12_lead(
     location: str | None,
     linkedin_url: str | None,
     school: str | None = None,
+    contact_email: str | None = None,
+    contact_phone: str | None = None,
     search_prompt: str | None = None,
     source_snapshot: str | None = None,
     source_query: str | None = None,
@@ -360,6 +370,14 @@ def persist_avatar12_lead(
             )
         )
 
+    def _fill_blank(target: AvatarLead, field: str, value: str | None) -> None:
+        if not value or not str(value).strip():
+            return
+        current = getattr(target, field, None)
+        if current and str(current).strip():
+            return
+        setattr(target, field, str(value).strip())
+
     if existing:
         lead = existing
         lead.headline = headline
@@ -375,6 +393,8 @@ def persist_avatar12_lead(
         if fit_evidence is not None:
             lead.fit_evidence = fit_evidence
             lead.fit_source = fit_source
+        _fill_blank(lead, "contact_email", contact_email)
+        _fill_blank(lead, "contact_phone", contact_phone)
     else:
         lead = AvatarLead(
             avatar_type=avatar_type,
@@ -386,6 +406,8 @@ def persist_avatar12_lead(
             past_experience=past_experience,
             location=location,
             linkedin_url=linkedin_url,
+            contact_email=(contact_email or "").strip() or None,
+            contact_phone=(contact_phone or "").strip() or None,
             search_prompt=search_prompt,
             source_snapshot=source_snapshot,
             source_query=source_query or search_prompt,
@@ -496,6 +518,38 @@ def latest_avatar12_draft(*, db: Session, lead_id: uuid.UUID) -> LeadDraft | Non
     if not lead or not lead.drafts:
         return None
     return sorted(lead.drafts, key=lambda item: item.created_at)[-1]
+
+
+def update_avatar12_draft(
+    *,
+    db: Session,
+    lead_id: uuid.UUID,
+    message: str,
+) -> dict[str, Any] | None:
+    lead = db.scalar(
+        select(AvatarLead).where(AvatarLead.id == lead_id).options(selectinload(AvatarLead.drafts))
+    )
+    if not lead:
+        return None
+
+    body = rewrite_local_landing_urls((message or "").strip())
+    if not lead.drafts:
+        draft = LeadDraft(
+            avatar12_lead_id=lead.id,
+            status="draft",
+            message=body,
+            reasoning="Draft created by user.",
+        )
+        db.add(draft)
+    else:
+        draft = sorted(lead.drafts, key=lambda item: item.created_at)[-1]
+        if draft.status == "sent":
+            raise ValueError("Cannot edit a draft that has already been marked as sent.")
+        draft.message = body
+
+    db.commit()
+    db.refresh(draft)
+    return _draft_payload(draft)
 
 
 def mark_avatar12_draft_sent(

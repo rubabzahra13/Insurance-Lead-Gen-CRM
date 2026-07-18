@@ -140,13 +140,13 @@ export default function LandingPage() {
             }).catch(() => {});
           }
         } else if (isTestId) {
-          setLeadData({ id: leadId, name: 'Alex Johnson', email: 'alex.johnson@example.com', phone: '+1 (555) 019-2834', avatar_type: 'Avatar 1' });
+          setLeadData({ id: leadId, name: 'Alex Johnson', email: 'alex.johnson@example.com', phone: '+1 (555) 019-2834', avatar_type: 'avatar1' });
           setFormData(prev => ({ ...prev, name: 'Alex Johnson', email: 'alex.johnson@example.com', phone: '+1 (555) 019-2834' }));
         } else { setError(true); }
       } catch (err) {
         if (err?.name === 'AbortError') return;
         if (isTestId) {
-          setLeadData({ id: leadId, name: 'Alex Johnson (Mock)', avatar_type: 'Avatar 1' });
+          setLeadData({ id: leadId, name: 'Alex Johnson (Mock)', avatar_type: 'avatar1' });
         } else { setError(true); }
       } finally {
         if (!controller.signal.aborted) setLoading(false);

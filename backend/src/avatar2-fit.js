@@ -1,4 +1,4 @@
-// Avatar 2 (Job Upgraders): employees at small firms OR upskilling talk — never CEOs/founders.
+// Job Upgraders: individuals changing jobs for better opportunities (often at small firms / upskilling talk). Never CEOs/founders.
 
 export const OWNER_TITLE_RE =
   /\b(ceo|c\.e\.o|chief executive|founder|co-?founder|owner|proprietor|managing director|chairman|chairwoman|president|principal owner|principal\b|partner\b|vice president|\bvp\b)\b/i;

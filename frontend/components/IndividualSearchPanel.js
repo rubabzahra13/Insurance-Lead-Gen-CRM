@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { individualLabel } from '../lib/avatar-labels';
 import { refreshDashboard } from '../lib/dashboard-events';
 import { toFriendlyTrace } from '../lib/pipeline-trace';
 import { COLORS } from '../lib/colors';
+import { getApiBaseUrl } from '../lib/apiBaseUrl';
 
 const PIPELINE_STEPS = [
   {
@@ -40,6 +41,17 @@ const PIPELINE_STEPS = [
 function pipelineStepFromLabel(label) {
   if (!label) return null;
   return PIPELINE_STEPS.find((step) => step.match.test(label)) || null;
+}
+
+function formatPlanRenewalDate(isoDate) {
+  const raw = String(isoDate || '').trim().slice(0, 10);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (!match) return raw || null;
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return raw;
+  return `${months[month - 1]} ${day}, ${Number(match[1])}`;
 }
 
 function getPipelineProgress(searchState) {
@@ -126,10 +138,42 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
   const [errorMessage, setErrorMessage] = useState('');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [validationError, setValidationError] = useState('');
+  const [serpQuota, setSerpQuota] = useState(null);
+
+  const refreshSerpQuota = useCallback(async ({ force = false } = {}) => {
+    try {
+      const apiBaseUrl = getApiBaseUrl();
+      const res = await fetch(
+        `${apiBaseUrl}/api/scrape/serp-quota${force ? '?force=true' : ''}`,
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      setSerpQuota(data);
+    } catch {
+      // Non-blocking — search still works without the badge.
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshSerpQuota();
+    const timer = window.setInterval(() => refreshSerpQuota(), 60_000);
+    return () => window.clearInterval(timer);
+  }, [refreshSerpQuota, activeSegment]);
 
   const displayQuery = selectedLocation?.label
     ? `${roleQuery.trim()} in ${selectedLocation.label}`
     : roleQuery.trim();
+
+  const searchesLeftLabel = serpQuota?.label || null;
+  const searchesLeftLow =
+    typeof serpQuota?.searches_left === 'number' && serpQuota.searches_left <= 10;
+  const searchesExhausted =
+    typeof serpQuota?.searches_left === 'number' && serpQuota.searches_left <= 0;
+  const searchesExhaustedMessage =
+    serpQuota?.exhausted_message
+    || (serpQuota?.plan_renewal_date
+      ? `No searches left for this month. Plan resets on ${formatPlanRenewalDate(serpQuota.plan_renewal_date)}.`
+      : 'No searches left for this month. Plan resets next month.');
 
   const logToConsole = (raw) => {
     console.log(`[InsureLead Pipeline] ${toFriendlyTrace(raw)}`, { detail: raw });
@@ -189,9 +233,13 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
       return;
     }
 
-    // Location must come from the Places dropdown (placeId), never free text.
-    if (selectedLocation && !selectedLocation.placeId) {
+    if (!selectedLocation?.placeId) {
       setValidationError('Please pick a location from the dropdown list.');
+      return;
+    }
+
+    if (searchesExhausted) {
+      setValidationError(searchesExhaustedMessage);
       return;
     }
 
@@ -199,8 +247,7 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
     setScrapedLeads([]);
     setErrorMessage('');
     replaceLogs([
-      `[INIT] Lead search started for role: "${role}"` +
-        (selectedLocation?.label ? `, location: "${selectedLocation.label}"` : ' (no location)'),
+      `[INIT] Lead search started for role: "${role}", location: "${selectedLocation.label}"`,
       `[INFO] Lead type: ${individualLabel(activeSegment)} (selected workspace)`,
       `[INFO] Engine: Google search (SERP) + AI filtering`,
     ]);
@@ -249,11 +296,13 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
         setScrapedLeads(mapPipelineLeads(rawLeads));
         setSearchState('completed');
         reportCompletion(rawLeads, displayQuery);
+        refreshSerpQuota({ force: true });
         return true; // Polling finished
       } else if (job.status === 'error') {
         appendLog(`[ERROR] Lead search failed: ${job.error}`);
         setErrorMessage(job.error);
         setSearchState('failed');
+        refreshSerpQuota({ force: true });
         return true; // Polling finished
       }
       return false; // Still running
@@ -263,7 +312,7 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
     }
   };
 
-  // Run Avatar 1/2 via the SERP experimental engine (same as Compare page).
+  // Run Avatar 1/2 via the SERP lead engine.
   const runRecruitmentScraper = async (role, avatarType, location) => {
     const apiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000');
     appendLogs([
@@ -328,11 +377,13 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
             setScrapedLeads(mapPipelineLeads(rawLeads));
             setSearchState('completed');
             reportCompletion(rawLeads, displayQuery);
+            refreshSerpQuota({ force: true });
             eventSource.close();
           } else if (data.type === 'error') {
             appendLog(`[ERROR] Lead search failed: ${data.message}`);
             setErrorMessage(data.message);
             setSearchState('failed');
+            refreshSerpQuota({ force: true });
             eventSource.close();
           }
         } catch (parseErr) {
@@ -360,6 +411,7 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
       appendLog(`[ERROR] Lead search server unavailable: ${err.message}`);
       setErrorMessage(err.message);
       setSearchState('failed');
+      refreshSerpQuota({ force: true });
     }
   };
 
@@ -412,21 +464,37 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
         <section className="individual-search-hub" aria-label="Find new leads">
           <div className="individual-search-hub__inner">
             <div className="individual-search-hub__copy">
-              <p className="individual-search-hub__eyebrow">New lead search · {segmentLabel}</p>
+              <div className="individual-search-hub__eyebrow-row">
+                <p className="individual-search-hub__eyebrow">New lead search · {segmentLabel}</p>
+                {searchesLeftLabel && (
+                  <span
+                    className={[
+                      'individual-search-hub__quota',
+                      searchesLeftLow ? 'individual-search-hub__quota--low' : '',
+                      searchesExhausted ? 'individual-search-hub__quota--empty' : '',
+                    ].filter(Boolean).join(' ')}
+                    title={serpQuota?.plan_name ? `SerpAPI plan: ${serpQuota.plan_name}` : 'SerpAPI monthly searches remaining'}
+                  >
+                    {searchesLeftLabel}
+                  </span>
+                )}
+              </div>
               <h2 className="individual-search-hub__title">
                 Who are you looking for today?
               </h2>
               <p className="individual-search-hub__desc">
                 {activeSegment === 'avatar1'
-                  ? 'Enter a role or major, then pick a city or country. We add recent-graduate filters, search Google, and save matches to your outreach drafts.'
-                  : 'Enter a role, then pick a city or country. We look for producers/agents at small agencies (or upskilling talk)—not CEOs or founders.'}
+                  ? 'Enter a role or major and pick a city or country (both required). We add recent-graduate filters, search Google, and save matches to your outreach drafts.'
+                  : 'Enter a role and pick a city or country (both required). We look for producers/agents open to a better next role (or upskilling talk), not CEOs or founders.'}
               </p>
             </div>
 
             <form onSubmit={handleSearchSubmit} className="individual-search-hub__form">
               <div className={`individual-search-hub__fields${validationError ? ' individual-search-hub__fields--invalid' : ''}`}>
                 <div className="individual-search-hub__role">
-                  <label className="individual-search-hub__label" htmlFor="lead-role-input">Role</label>
+                  <label className="individual-search-hub__label" htmlFor="lead-role-input">
+                    Role <span className="individual-search-hub__required" aria-hidden="true">*</span>
+                  </label>
                   <div className="individual-search-hub__bar">
                     <Search className="individual-search-hub__icon" size={20} aria-hidden="true" />
                     <input
@@ -436,24 +504,52 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
                       placeholder={rolePlaceholder}
                       value={roleQuery}
                       onChange={handleRoleChange}
-                      aria-label="Role"
+                      aria-label="Role (required)"
+                      required
                       autoFocus
                     />
                   </div>
                 </div>
                 <div className="individual-search-hub__location">
-                  <label className="individual-search-hub__label" htmlFor="lead-location-input">Location</label>
+                  <label className="individual-search-hub__label" htmlFor="lead-location-input">
+                    Location <span className="individual-search-hub__required" aria-hidden="true">*</span>
+                  </label>
                   <LocationPicker
                     value={selectedLocation}
-                    onChange={setSelectedLocation}
+                    onChange={(next) => {
+                      setSelectedLocation(next);
+                      if (next?.placeId) setValidationError('');
+                    }}
                     invalid={Boolean(validationError)}
+                    required
                   />
                 </div>
-                <button type="submit" className="individual-search-hub__submit">
+                <button
+                  type="submit"
+                  className="individual-search-hub__submit"
+                  disabled={
+                    searchesExhausted
+                    || !roleQuery.trim()
+                    || !selectedLocation?.placeId
+                  }
+                  title={
+                    searchesExhausted
+                      ? searchesExhaustedMessage
+                      : !roleQuery.trim() || !selectedLocation?.placeId
+                        ? 'Enter a role and pick a location to search'
+                        : undefined
+                  }
+                >
                   Find leads
                   <ArrowRight size={18} />
                 </button>
               </div>
+              {searchesExhausted && (
+                <div className="individual-search-hub__error">
+                  <AlertTriangle size={14} />
+                  <span>{searchesExhaustedMessage}</span>
+                </div>
+              )}
               {validationError && (
                 <div className="individual-search-hub__error">
                   <AlertTriangle size={14} />
@@ -491,6 +587,17 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
                   : searchState === 'failed'
                     ? 'Search stopped'
                     : 'Searching now'}
+                {searchesLeftLabel ? (
+                  <span
+                    className={[
+                      'search-track__quota',
+                      searchesLeftLow ? 'search-track__quota--low' : '',
+                      searchesExhausted ? 'search-track__quota--empty' : '',
+                    ].filter(Boolean).join(' ')}
+                  >
+                    {searchesLeftLabel}
+                  </span>
+                ) : null}
               </p>
               <h3 className="search-track__query">&ldquo;{displayQuery}&rdquo;</h3>
               <p className="search-track__meta">

@@ -11,6 +11,7 @@ import { exportAndSyncAvatar12Leads } from './avatar12-export.js';
 import { saveRawSearchResults } from './raw-search.js';
 import { sanitizeLeadFields } from './lead-fields.js';
 import { enrichLeadFields } from './enrich-fields-llm.js';
+import { enrichLeadEmails } from './email-serp-enrich.js';
 import { linkedinSlugFromUrl, mapWithConcurrency, personIdentityKey } from './utils.js';
 import { buildAvatarSearch } from './avatar-prompts.js';
 import { buildSearchPlan, applyPlanCodeFilter } from './search-plan.js';
@@ -224,7 +225,7 @@ export async function runSerpLeadPipeline(userQuery, options = {}) {
   const llmPass = await progress.step('AI quality filter', () =>
     filterLeadsWithLlm(leads, plan, { onLog: (msg) => progress.log(msg) }),
   );
-  leads = llmPass.leads;
+  leads = fillMissingLocationsFromPlan(llmPass.leads, plan);
 
   options.onProgress?.({ type: 'leads_preview', leads: leads.slice(0, maxResults), stage: 'filtered' });
 
@@ -235,7 +236,12 @@ export async function runSerpLeadPipeline(userQuery, options = {}) {
 
   const ranked = rankLeads(leads);
   const { accepted, rejected } = partitionForExport(ranked);
-  const exportLeads = accepted.slice(0, maxResults);
+  let exportLeads = accepted.slice(0, maxResults);
+
+  // Public email pass (snippet first, then 1 Google query per blank lead).
+  exportLeads = await progress.step('Finding public emails (SerpAPI)', () =>
+    enrichLeadEmails(exportLeads, { onLog: (msg) => progress.log(msg) }),
+  );
 
   const result = {
     leads: exportLeads,
@@ -246,6 +252,7 @@ export async function runSerpLeadPipeline(userQuery, options = {}) {
       exported: exportLeads.length,
       withLinks: exportLeads.filter((lead) => lead.link).length,
       verifiedLinks: exportLeads.filter((lead) => lead.urlVerification?.status === 'verified').length,
+      withEmails: exportLeads.filter((lead) => (lead.contact_email || '').trim()).length,
       avgConfidence:
         exportLeads.length > 0
           ? Number((exportLeads.reduce((s, l) => s + l.confidence, 0) / exportLeads.length).toFixed(2))

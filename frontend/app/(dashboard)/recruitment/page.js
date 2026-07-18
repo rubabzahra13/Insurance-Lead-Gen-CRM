@@ -19,10 +19,13 @@ import { getApiBaseUrl } from '../../../lib/apiBaseUrl';
 import { 
   Sparkles, AlertCircle, Search, MapPin, 
   Briefcase, Filter, X, RotateCcw, AlertTriangle, 
-  CheckCircle2, ArrowUpRight, User, FileText, ChevronRight, Loader2,
+  CheckCircle2, ArrowUpRight, User, FileText, ChevronLeft, ChevronRight, Loader2,
   Clock, Activity, MessageSquare, TrendingUp, ArrowUpDown, Copy, Check,
-  Pencil, Building2, ExternalLink
+  Pencil, Building2, ExternalLink, Mail
 } from 'lucide-react';
+
+const LIST_PAGE_SIZE = 10;
+const ANALYTICS_PAGE_SIZE = 10;
 
 const SORT_OPTIONS = [
   { value: 'newest', label: 'Newest first' },
@@ -47,7 +50,6 @@ const FUNNEL_TEST_LEAD = {
   location: 'Islamabad, Pakistan',
   linkedin_url: null,
   contact_email: FUNNEL_TEST_EMAIL,
-  contact_phone: null,
   search_prompt: 'funnel test lead',
   source_query: 'funnel test lead',
   draft_count: 1,
@@ -91,12 +93,27 @@ function leadIdentityKey(lead) {
 function draftStatusLabel(status) {
   if (status === 'sent') return 'Sent';
   if (status === 'failed') return 'Failed';
-  return 'Draft';
+  // Unsent outreach — not "draft person"; the lead still has profile + funnel.
+  return 'Not sent';
 }
 
 function stripEmDashes(text) {
   if (!text) return '';
   return text.replace(/\s*[\u2014\u2013]\s*/g, ', ').trim();
+}
+
+function stripAvatarWording(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/\bavatar\s*[12]\b/gi, '')
+    .replace(/\bavatars?\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([,.;:])/g, '$1')
+    .trim();
+}
+
+function formatLeadInsight(text) {
+  return stripAvatarWording(stripEmDashes(text));
 }
 
 function displayField(value, label = 'details') {
@@ -106,6 +123,15 @@ function displayField(value, label = 'details') {
 
 function isMissingField(value) {
   return !String(value || '').trim();
+}
+
+/** Prefer stored location; if blank, reuse the place from the search query ("role in Place"). */
+function resolveLeadLocation(lead) {
+  const stored = String(lead?.location || '').trim();
+  if (stored) return stored;
+  const query = String(lead?.source_query || lead?.search_prompt || '').trim();
+  const match = query.match(/\sin\s+(.+)$/i);
+  return match ? match[1].trim() : '';
 }
 
 /** Prefer a clean employer; never show LinkedIn Experience dumps as company. */
@@ -218,7 +244,7 @@ function leadMatchesRoleFilter(lead, roleFilter) {
 function leadMatchesLocationFilter(lead, locationFilter) {
   if (!locationFilter || locationFilter === 'all') return true;
   const needle = locationFilter.toLowerCase();
-  const location = String(lead.location || '').toLowerCase();
+  const location = resolveLeadLocation(lead).toLowerCase();
   if (location && location.includes(needle.split(',')[0].trim())) return true;
   const haystack = [lead.location, lead.source_query, lead.search_prompt]
     .filter(Boolean)
@@ -228,10 +254,6 @@ function leadMatchesLocationFilter(lead, locationFilter) {
     const token = part.trim();
     return token.length >= 3 && haystack.includes(token);
   });
-}
-
-function formatLeadInsight(text) {
-  return stripEmDashes(text);
 }
 
 function parseFunnelPayload(raw) {
@@ -334,6 +356,8 @@ function RecruitmentWorkspaceContent() {
   const [recentRoles, setRecentRoles] = useState([]);
   const [recentLocations, setRecentLocations] = useState([]);
   const [sortBy, setSortBy] = useState('newest');
+  const [listPage, setListPage] = useState(1);
+  const [analyticsPage, setAnalyticsPage] = useState(1);
   const urlView = searchParams.get('view');
   const [workspaceSection, setWorkspaceSection] = useState(
     urlView === 'source' || urlView === 'analytics' ? urlView : 'leads'
@@ -402,9 +426,145 @@ function RecruitmentWorkspaceContent() {
   const [editingLead, setEditingLead] = useState(false);
   const [editForm, setEditForm] = useState(null);
   const [savingLead, setSavingLead] = useState(false);
-  const openEditAfterLoadRef = useRef(false);
+  const [editingDraft, setEditingDraft] = useState(false);
+  const [draftBaseline, setDraftBaseline] = useState('');
+  const [savingDraft, setSavingDraft] = useState(false);
+  const draftTextareaRef = useRef(null);
+  const draftLoadSeqRef = useRef(0);
   /** In-session cache of full lead detail payloads for fast revisit. */
   const leadDetailCacheRef = useRef(new Map());
+  const toastTimerRef = useRef(null);
+
+  const showToast = useCallback((message, type = 'success') => {
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    setToast({ message, type });
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 3200);
+  }, []);
+
+  const syncDraftIntoLeadState = useCallback((leadId, savedDraft, message) => {
+    const normalized = {
+      ...savedDraft,
+      message,
+    };
+
+    setSelectedLeadDetails((prev) => {
+      if (!prev || String(prev.id) !== String(leadId)) return prev;
+      const drafts = Array.isArray(prev.drafts) ? [...prev.drafts] : [];
+      const matchIdx = drafts.findIndex((d) => String(d.id) === String(normalized.id));
+      if (matchIdx >= 0) {
+        drafts[matchIdx] = { ...drafts[matchIdx], ...normalized };
+      } else if (drafts.length === 0) {
+        drafts.push(normalized);
+      } else {
+        drafts[drafts.length - 1] = { ...drafts[drafts.length - 1], ...normalized };
+      }
+      const next = { ...prev, drafts };
+      leadDetailCacheRef.current.set(String(leadId), next);
+      return next;
+    });
+
+    setLeads((prev) => {
+      const next = prev.map((lead) => {
+        if (String(lead.id) !== String(leadId)) return lead;
+        return {
+          ...lead,
+          draft_count: Math.max(1, lead.draft_count || 0),
+          latest_draft: {
+            ...(lead.latest_draft || {}),
+            ...normalized,
+          },
+        };
+      });
+      setApiCache(API_CACHE_KEYS.avatar12Leads, { items: next });
+      return next;
+    });
+  }, []);
+
+  // Fetch leads for Outreach Drafts (and topbar counts)
+  const fetchLeads = useCallback(async ({ force = false } = {}) => {
+    if (!force) {
+      const cached = getApiCache(API_CACHE_KEYS.avatar12Leads);
+      if (cached) {
+        const items = Array.isArray(cached) ? cached : (cached.items || []);
+        setLeads(withFunnelTestLead(items));
+        setLoading(false);
+        void fetchLeads({ force: true });
+        return;
+      }
+    }
+
+    if (!force) setLoading(true);
+    setError(false);
+    try {
+      const apiBaseUrl = getApiBaseUrl();
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 45000);
+      let data;
+      try {
+        const res = await fetch(`${apiBaseUrl}/api/avatar12/leads`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`Request failed (${res.status})`);
+        data = await res.json();
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
+      const items = withFunnelTestLead(Array.isArray(data) ? data : (data.items || []));
+      setLeads(items);
+      setApiCache(API_CACHE_KEYS.avatar12Leads, { items });
+    } catch (err) {
+      console.error(err);
+      setError(true);
+      setLeads((prev) => withFunnelTestLead(prev));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const fetchFunnelData = useCallback(async ({ force = false } = {}) => {
+    if (!force) {
+      const cached = getApiCache(API_CACHE_KEYS.funnel);
+      if (cached) {
+        setFunnelData({
+          chart: cached.chart || [],
+          items: cached.items || [],
+        });
+        setFunnelLoading(false);
+        void fetchFunnelData({ force: true });
+        return;
+      }
+    }
+    if (!force) setFunnelLoading(true);
+    setFunnelError(false);
+    try {
+      const apiBaseUrl = getApiBaseUrl();
+      const { data } = await fetchCachedJson(`${apiBaseUrl}/api/dashboard/funnel`, {
+        cacheKey: API_CACHE_KEYS.funnel,
+        force: true,
+      });
+      setFunnelData({
+        chart: data.chart || [],
+        items: data.items || [],
+      });
+    } catch (err) {
+      console.error(err);
+      setFunnelError(true);
+    } finally {
+      setFunnelLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchLeads();
+    fetchFunnelData();
+  }, [fetchLeads, fetchFunnelData]);
+
+  useEffect(() => {
+    setSegmentCounts({
+      avatar1: leads.filter((lead) => lead.avatar_type === 'avatar1').length,
+      avatar2: leads.filter((lead) => lead.avatar_type === 'avatar2').length,
+    });
+  }, [leads, setSegmentCounts]);
 
   // Fetch selected lead details & latest draft when selectedLeadId changes
   useEffect(() => {
@@ -415,12 +575,14 @@ function RecruitmentWorkspaceContent() {
       setNoDraftExists(false);
       setEditingLead(false);
       setEditForm(null);
-      openEditAfterLoadRef.current = false;
+      setEditingDraft(false);
+      setDraftBaseline('');
       return;
     }
 
     let cancelled = false;
     const leadId = selectedLeadId;
+    const loadSeq = ++draftLoadSeqRef.current;
 
     const loadRightPaneData = async () => {
       setRightError(false);
@@ -429,8 +591,9 @@ function RecruitmentWorkspaceContent() {
       setDraftCopied(false);
       setEditingLead(false);
       setEditForm(null);
+      setEditingDraft(false);
 
-      const cached = leadDetailCacheRef.current.get(leadId);
+      const cached = leadDetailCacheRef.current.get(leadId) || leadDetailCacheRef.current.get(String(leadId));
       const listRow = leads.find((item) => String(item.id) === String(leadId));
       if (cached) {
         setSelectedLeadDetails(cached);
@@ -449,41 +612,36 @@ function RecruitmentWorkspaceContent() {
         const leadRes = await fetch(`${apiBaseUrl}/api/avatar12/leads/${leadId}`);
         if (!leadRes.ok) throw new Error('Failed to fetch lead details');
         const leadData = await leadRes.json();
-        if (cancelled) return;
+        if (cancelled || loadSeq !== draftLoadSeqRef.current) return;
 
-        leadDetailCacheRef.current.set(leadId, leadData);
+        leadDetailCacheRef.current.set(String(leadId), leadData);
         setSelectedLeadDetails(leadData);
         setRightLoading(false);
 
-        if (openEditAfterLoadRef.current) {
-          openEditAfterLoadRef.current = false;
-          setEditForm({
-            name: leadData.name || '',
-            headline: leadData.headline || '',
-            role: leadData.role || '',
-            company: leadData.company || '',
-            location: leadData.location || '',
-            linkedin_url: leadData.linkedin_url || '',
-          });
-          setEditingLead(true);
-        }
-
         const draftRes = await fetch(`${apiBaseUrl}/api/avatar12/leads/${leadId}/drafts/latest`);
-        if (cancelled) return;
+        if (cancelled || loadSeq !== draftLoadSeqRef.current) return;
 
         if (draftRes.ok) {
           const draftData = await draftRes.json();
-          setDraftMessage(stripEmDashes(draftData.message || ''));
+          // Keep draft body intact for edit/save round-trips (do not scrub wording here).
+          const message = String(draftData.message || '');
+          setDraftMessage(message);
+          setDraftBaseline(message);
           setDraftReasoning(draftData.reasoning || '');
         } else if (draftRes.status === 404) {
           const draftsList = leadData.drafts || [];
           if (draftsList.length > 0) {
-            const latest = draftsList[draftsList.length - 1];
-            setDraftMessage(stripEmDashes(latest.message || ''));
-            setDraftReasoning(latest.reasoning || '');
+            const latest = [...draftsList].sort(
+              (a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0),
+            ).at(-1);
+            const message = String(latest?.message || '');
+            setDraftMessage(message);
+            setDraftBaseline(message);
+            setDraftReasoning(latest?.reasoning || '');
           } else {
             setNoDraftExists(true);
             setDraftMessage('');
+            setDraftBaseline('');
             setDraftReasoning('');
           }
         } else {
@@ -491,9 +649,9 @@ function RecruitmentWorkspaceContent() {
         }
       } catch (err) {
         console.error(err);
-        if (!cancelled) setRightError(true);
+        if (!cancelled && loadSeq === draftLoadSeqRef.current) setRightError(true);
       } finally {
-        if (!cancelled) setRightLoading(false);
+        if (!cancelled && loadSeq === draftLoadSeqRef.current) setRightLoading(false);
       }
     };
 
@@ -538,6 +696,7 @@ function RecruitmentWorkspaceContent() {
 
   const startEditingLead = (lead = selectedLeadDetails) => {
     if (!lead) return;
+    setEditingDraft(false);
     setActiveTab('profile');
     setEditForm({
       name: lead.name || '',
@@ -546,6 +705,7 @@ function RecruitmentWorkspaceContent() {
       company: lead.company || '',
       location: lead.location || '',
       linkedin_url: lead.linkedin_url || '',
+      contact_email: lead.contact_email || '',
     });
     setEditingLead(true);
   };
@@ -553,6 +713,73 @@ function RecruitmentWorkspaceContent() {
   const cancelEditingLead = () => {
     setEditingLead(false);
     setEditForm(null);
+  };
+
+  const startEditingDraft = () => {
+    setEditingLead(false);
+    setEditForm(null);
+    setActiveTab('compose');
+    setDraftBaseline(draftMessage);
+    setEditingDraft(true);
+    window.requestAnimationFrame(() => {
+      draftTextareaRef.current?.focus();
+    });
+  };
+
+  const cancelEditingDraft = () => {
+    setDraftMessage(draftBaseline);
+    setEditingDraft(false);
+  };
+
+  const finishEditingDraft = async () => {
+    if (!selectedLeadId) return;
+    const nextMessage = draftMessage;
+    if (!nextMessage.trim()) {
+      showToast('Add a message before saving.', 'error');
+      return;
+    }
+    if (nextMessage === draftBaseline) {
+      setEditingDraft(false);
+      return;
+    }
+
+    setSavingDraft(true);
+    const saveSeq = ++draftLoadSeqRef.current;
+    try {
+      const apiBaseUrl = getApiBaseUrl();
+      const res = await fetch(`${apiBaseUrl}/api/avatar12/leads/${selectedLeadId}/drafts/latest`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: nextMessage }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        const detail = errBody.detail;
+        const message = typeof detail === 'string'
+          ? detail
+          : Array.isArray(detail)
+            ? detail.map((item) => item?.msg || item).join(', ')
+            : `Save failed (${res.status})`;
+        throw new Error(message);
+      }
+      const savedDraft = await res.json();
+      // Prefer exactly what we saved so the textarea never snaps back to a scrubbed/old body.
+      const savedMessage = typeof savedDraft?.message === 'string' ? savedDraft.message : nextMessage;
+
+      if (saveSeq !== draftLoadSeqRef.current) return;
+
+      setDraftMessage(savedMessage);
+      setDraftBaseline(savedMessage);
+      setNoDraftExists(false);
+      setEditingDraft(false);
+      syncDraftIntoLeadState(selectedLeadId, savedDraft, savedMessage);
+      showToast('Message saved');
+    } catch (err) {
+      console.error(err);
+      showToast(err?.message || 'Could not save message', 'error');
+    } finally {
+      setSavingDraft(false);
+    }
   };
 
   const saveLeadEdits = async () => {
@@ -588,17 +815,11 @@ function RecruitmentWorkspaceContent() {
   };
 
   // Update URL search parameters when selecting a lead
-  const handleSelectLead = (leadId, { edit = false } = {}) => {
-    if (edit) openEditAfterLoadRef.current = true;
-    else if (!leadId) {
+  const handleSelectLead = (leadId) => {
+    if (!leadId) {
       setEditingLead(false);
       setEditForm(null);
-      openEditAfterLoadRef.current = false;
-    }
-
-    if (edit && leadId && leadId === selectedLeadId && selectedLeadDetails) {
-      startEditingLead(selectedLeadDetails);
-      return;
+      setEditingDraft(false);
     }
 
     const params = new URLSearchParams(searchParams.toString());
@@ -631,6 +852,7 @@ function RecruitmentWorkspaceContent() {
     setRoleFilter('all');
     setLocationFilter('all');
     setSortBy('newest');
+    setListPage(1);
     
     const params = new URLSearchParams(searchParams.toString());
     params.delete('q');
@@ -663,18 +885,18 @@ function RecruitmentWorkspaceContent() {
     try {
       await navigator.clipboard.writeText(text);
       setDraftCopied(true);
-      showToast('Draft copied.');
+      showToast('Message copied.');
       window.setTimeout(() => setDraftCopied(false), 2000);
     } catch (err) {
       console.error(err);
-      showToast('Could not copy draft.', 'error');
+      showToast('Could not copy message.', 'error');
     }
   };
 
   const requestMarkAsSent = () => {
     if (!selectedLeadId) return;
     if (!draftMessage.trim()) {
-      showToast('Add a draft message before marking as sent.', 'error');
+      showToast('Add a message before marking as sent.', 'error');
       return;
     }
     setConfirmMarkSentOpen(true);
@@ -683,7 +905,7 @@ function RecruitmentWorkspaceContent() {
   const handleMarkAsSent = async () => {
     if (!selectedLeadId) return;
     if (!draftMessage.trim()) {
-      showToast('Add a draft message before marking as sent.', 'error');
+      showToast('Add a message before marking as sent.', 'error');
       return;
     }
 
@@ -791,7 +1013,8 @@ function RecruitmentWorkspaceContent() {
         const companyMatch = lead.company?.toLowerCase().includes(query);
         const locationMatch = lead.location?.toLowerCase().includes(query);
         const promptMatch = lead.search_prompt?.toLowerCase().includes(query);
-        if (!nameMatch && !headlineMatch && !companyMatch && !locationMatch && !promptMatch) {
+        const emailMatch = lead.contact_email?.toLowerCase().includes(query);
+        if (!nameMatch && !headlineMatch && !companyMatch && !locationMatch && !promptMatch && !emailMatch) {
           return false;
         }
       }
@@ -854,8 +1077,55 @@ function RecruitmentWorkspaceContent() {
     return sorted;
   }, [leads, textSearch, leadSegment, statusFilter, roleFilter, locationFilter, sortBy, onlyThisSearch, isFromSearchRun]);
 
+  const listPageCount = Math.max(1, Math.ceil(filteredLeads.length / LIST_PAGE_SIZE));
+  const safeListPage = Math.min(listPage, listPageCount);
+  const listPageStart = filteredLeads.length === 0
+    ? 0
+    : (safeListPage - 1) * LIST_PAGE_SIZE + 1;
+  const listPageEnd = Math.min(safeListPage * LIST_PAGE_SIZE, filteredLeads.length);
+  const pagedLeads = useMemo(
+    () => filteredLeads.slice(
+      (safeListPage - 1) * LIST_PAGE_SIZE,
+      safeListPage * LIST_PAGE_SIZE,
+    ),
+    [filteredLeads, safeListPage],
+  );
+
+  useEffect(() => {
+    setListPage(1);
+  }, [textSearch, leadSegment, statusFilter, roleFilter, locationFilter, sortBy, onlyThisSearch]);
+
+  useEffect(() => {
+    if (listPage > listPageCount) setListPage(listPageCount);
+  }, [listPage, listPageCount]);
+
   // Calculate aggregate funnel metrics for the active segment
-  const aggregateItems = funnelData.items.filter((item) => item.avatar_type === leadSegment);
+  const aggregateItems = useMemo(
+    () => funnelData.items.filter((item) => item.avatar_type === leadSegment),
+    [funnelData.items, leadSegment],
+  );
+
+  const analyticsPageCount = Math.max(1, Math.ceil(aggregateItems.length / ANALYTICS_PAGE_SIZE));
+  const safeAnalyticsPage = Math.min(analyticsPage, analyticsPageCount);
+  const analyticsPageStart = aggregateItems.length === 0
+    ? 0
+    : (safeAnalyticsPage - 1) * ANALYTICS_PAGE_SIZE + 1;
+  const analyticsPageEnd = Math.min(safeAnalyticsPage * ANALYTICS_PAGE_SIZE, aggregateItems.length);
+  const pagedAnalyticsItems = useMemo(
+    () => aggregateItems.slice(
+      (safeAnalyticsPage - 1) * ANALYTICS_PAGE_SIZE,
+      safeAnalyticsPage * ANALYTICS_PAGE_SIZE,
+    ),
+    [aggregateItems, safeAnalyticsPage],
+  );
+
+  useEffect(() => {
+    setAnalyticsPage(1);
+  }, [leadSegment]);
+
+  useEffect(() => {
+    if (analyticsPage > analyticsPageCount) setAnalyticsPage(analyticsPageCount);
+  }, [analyticsPage, analyticsPageCount]);
 
   const totals = aggregateItems.reduce((acc, item) => {
     acc.link_clicked += item.link_clicked || 0;
@@ -876,13 +1146,13 @@ function RecruitmentWorkspaceContent() {
 
   const workspaceSections = [
     { id: 'source', label: 'Find New Leads', icon: Search, desc: 'Search for and source fresh individual prospects' },
-    { id: 'leads', label: 'Outreach Drafts', icon: FileText, desc: 'Review drafts, copy them, and mark as sent' },
+    { id: 'leads', label: 'Outreach', icon: FileText, desc: 'Review leads, copy outreach, and mark as sent' },
     { id: 'analytics', label: 'Track Sent', icon: TrendingUp, desc: 'Monitor how sent outreach performs after delivery' },
   ];
 
   const leadDetailTabs = [
     { id: 'profile', label: 'Profile', icon: User },
-    { id: 'compose', label: 'Get draft', icon: MessageSquare },
+    { id: 'compose', label: 'Message', icon: MessageSquare },
     { id: 'history', label: 'Sent Review', icon: Clock, sentOnly: true },
     { id: 'funnel', label: 'Funnel', icon: Activity },
   ];
@@ -978,7 +1248,7 @@ function RecruitmentWorkspaceContent() {
                     </td>
                   </tr>
                 ) : (
-                  aggregateItems.map((item) => (
+                  pagedAnalyticsItems.map((item) => (
                     <tr
                       key={item.lead_id}
                       onClick={() => { handleSelectLead(item.lead_id); setWorkspaceSection('leads'); }}
@@ -1006,6 +1276,38 @@ function RecruitmentWorkspaceContent() {
               </tbody>
             </table>
           </DotScrollArea>
+          {aggregateItems.length > 0 && (
+            <div className="business-table-pagination" role="navigation" aria-label="Analytics table pagination">
+              <span className="business-table-pagination__meta">
+                Showing {analyticsPageStart}-{analyticsPageEnd} of {aggregateItems.length}
+              </span>
+              <div className="business-table-pagination__controls">
+                <button
+                  type="button"
+                  className="business-table-pagination__btn"
+                  disabled={safeAnalyticsPage <= 1}
+                  onClick={() => setAnalyticsPage((page) => Math.max(1, page - 1))}
+                  aria-label="Previous page"
+                >
+                  <ChevronLeft size={14} />
+                  Previous
+                </button>
+                <span className="business-table-pagination__page">
+                  Page {safeAnalyticsPage} of {analyticsPageCount}
+                </span>
+                <button
+                  type="button"
+                  className="business-table-pagination__btn"
+                  disabled={safeAnalyticsPage >= analyticsPageCount}
+                  onClick={() => setAnalyticsPage((page) => Math.min(analyticsPageCount, page + 1))}
+                  aria-label="Next page"
+                >
+                  Next
+                  <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -1119,6 +1421,7 @@ function RecruitmentWorkspaceContent() {
                 setLocationFilter('all');
               }
               setListFiltersOpen(true);
+              setListPage(1);
               invalidateApiCache([API_CACHE_KEYS.avatar12Leads, API_CACHE_KEYS.funnel]);
               fetchLeads({ force: true });
               fetchFunnelData({ force: true });
@@ -1135,7 +1438,7 @@ function RecruitmentWorkspaceContent() {
         {/* List header: search + collapsible filters */}
         <div className="individual-list-header">
           <div className="individual-list-header__top">
-            <h3 className="individual-list-header__title">Outreach Drafts</h3>
+            <h3 className="individual-list-header__title">Outreach</h3>
             <span className="individual-list-header__count">{filteredLeads.length} · {activeSegmentMeta.shortLabel}</span>
           </div>
 
@@ -1265,14 +1568,14 @@ function RecruitmentWorkspaceContent() {
           <div className="individual-list-filters-panel">
             <div className="individual-list-filters-grid">
               <label className="individual-list-filter-field">
-                <span>Status</span>
+                <span>Outreach</span>
                 <select
                   value={statusFilter}
                   onChange={(e) => setStatusFilter(e.target.value)}
-                  aria-label="Filter by status"
+                  aria-label="Filter by outreach status"
                 >
-                  <option value="all">All statuses</option>
-                  <option value="draft">Draft</option>
+                  <option value="all">All outreach</option>
+                  <option value="draft">Not sent</option>
                   <option value="sent">Sent</option>
                 </select>
               </label>
@@ -1383,12 +1686,12 @@ function RecruitmentWorkspaceContent() {
           ) : (
             /* Leads list */
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {filteredLeads.map((lead) => {
+              {pagedLeads.map((lead) => {
                 const isActive = lead.id === selectedLeadId;
                 const draftStatus = lead.latest_draft?.status || 'draft';
                 const fromThisSearch = isFromSearchRun(lead);
                 const companyMissing = isCompanyOrExperienceMissing(lead);
-                const locationMissing = isMissingField(lead.location);
+                const locationMissing = isMissingField(resolveLeadLocation(lead));
                 const subtitle = stripEmDashes(lead.headline || lead.role || '').trim();
 
                 return (
@@ -1404,19 +1707,6 @@ function RecruitmentWorkspaceContent() {
                     <div className="outreach-lead-card__top">
                       <span className="outreach-lead-card__name">{lead.name}</span>
                       <div className="outreach-lead-card__top-actions">
-                        <button
-                          type="button"
-                          className="outreach-lead-card__edit"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleSelectLead(lead.id, { edit: true });
-                          }}
-                          aria-label={`Edit ${lead.name}`}
-                          title="Edit lead"
-                        >
-                          <Pencil size={13} />
-                          Edit
-                        </button>
                         <span className={`outreach-lead-card__status outreach-lead-card__status--${draftStatus}`}>
                           {draftStatusLabel(draftStatus)}
                         </span>
@@ -1434,8 +1724,14 @@ function RecruitmentWorkspaceContent() {
                       </span>
                       <span className={locationMissing ? 'is-missing' : ''}>
                         <MapPin size={10} aria-hidden="true" />
-                        {displayField(lead.location, 'location')}
+                        {displayField(resolveLeadLocation(lead), 'location')}
                       </span>
+                      {(lead.contact_email || '').trim() ? (
+                        <span className="outreach-lead-card__email" title={lead.contact_email}>
+                          <Mail size={10} aria-hidden="true" />
+                          {lead.contact_email.trim()}
+                        </span>
+                      ) : null}
                     </div>
                   </div>
                 );
@@ -1443,6 +1739,38 @@ function RecruitmentWorkspaceContent() {
             </div>
           )}
         </DotScrollArea>
+        {filteredLeads.length > 0 && (
+          <div className="business-table-pagination" role="navigation" aria-label="Drafts list pagination">
+            <span className="business-table-pagination__meta">
+              Showing {listPageStart}-{listPageEnd} of {filteredLeads.length}
+            </span>
+            <div className="business-table-pagination__controls">
+              <button
+                type="button"
+                className="business-table-pagination__btn"
+                disabled={safeListPage <= 1}
+                onClick={() => setListPage((page) => Math.max(1, page - 1))}
+                aria-label="Previous page"
+              >
+                <ChevronLeft size={14} />
+                Previous
+              </button>
+              <span className="business-table-pagination__page">
+                Page {safeListPage} of {listPageCount}
+              </span>
+              <button
+                type="button"
+                className="business-table-pagination__btn"
+                disabled={safeListPage >= listPageCount}
+                onClick={() => setListPage((page) => Math.min(listPageCount, page + 1))}
+                aria-label="Next page"
+              >
+                Next
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Right Pane: Selected Details or Aggregate Funnel Analytics Dashboard */}
@@ -1450,14 +1778,14 @@ function RecruitmentWorkspaceContent() {
         {selectedLeadId ? (
           /* LEAD SPECIFIC VIEW */
           rightLoading ? (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
-              <Loader2 className="animate-spin" size={32} style={{ color: COLORS.oldRose }} />
-              <span style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Loading lead details...</span>
+            <div className="individual-lead-detail individual-lead-detail--state">
+              <Loader2 className="animate-spin" size={22} style={{ color: 'var(--text-muted)' }} />
+              <p>Loading lead details…</p>
             </div>
           ) : rightError ? (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '16px' }}>
-              <AlertTriangle size={36} style={{ color: COLORS.error }} />
-              <h4 style={{ fontWeight: 600 }}>Failed to load details</h4>
+            <div className="individual-lead-detail individual-lead-detail--state">
+              <AlertTriangle size={22} style={{ color: COLORS.error }} />
+              <h4>Failed to load details</h4>
               <button 
                 onClick={() => {
                   const lid = selectedLeadId;
@@ -1471,9 +1799,8 @@ function RecruitmentWorkspaceContent() {
             </div>
           ) : selectedLeadDetails ? (
             <div className="individual-lead-detail">
-              <div className="individual-lead-detail__header">
+              <header className="individual-lead-detail__header">
                 <div className="individual-lead-detail__header-main">
-                  <h3 className="individual-lead-detail__name">{selectedLeadDetails.name}</h3>
                   <div className="individual-lead-detail__meta">
                     <span className="individual-lead-detail__type-badge">
                       {individualShortLabel(selectedLeadDetails.avatar_type)}
@@ -1482,23 +1809,19 @@ function RecruitmentWorkspaceContent() {
                       {draftStatusLabel(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft')}
                     </span>
                   </div>
+                  <h3 className="individual-lead-detail__name">{selectedLeadDetails.name}</h3>
+                  {(selectedLeadDetails.source_query || selectedLeadDetails.search_prompt) && (
+                    <p className="individual-lead-detail__found">
+                      Found via query &ldquo;{selectedLeadDetails.source_query || selectedLeadDetails.search_prompt}&rdquo;
+                    </p>
+                  )}
                 </div>
                 <div className="individual-lead-detail__header-actions">
-                  {!editingLead && (
-                    <button
-                      type="button"
-                      className="individual-lead-detail__edit"
-                      onClick={() => startEditingLead(selectedLeadDetails)}
-                    >
-                      <Pencil size={14} />
-                      Edit
-                    </button>
-                  )}
                   <button type="button" onClick={() => handleSelectLead('')} className="individual-lead-detail__close" aria-label="Close">
-                    <X size={18} />
+                    <X size={16} />
                   </button>
                 </div>
-              </div>
+              </header>
 
               <nav className="individual-lead-tabs" aria-label="Lead detail sections">
                 {visibleLeadDetailTabs.map((tab) => {
@@ -1509,7 +1832,15 @@ function RecruitmentWorkspaceContent() {
                       key={tab.id}
                       type="button"
                       className={`individual-lead-tabs__tab${isTabActive ? ' individual-lead-tabs__tab--active' : ''}`}
-                      onClick={() => setActiveTab(tab.id)}
+                      onClick={() => {
+                        if (tab.id !== 'compose' && editingDraft) {
+                          cancelEditingDraft();
+                        }
+                        if (tab.id !== 'profile' && editingLead) {
+                          cancelEditingLead();
+                        }
+                        setActiveTab(tab.id);
+                      }}
                     >
                       <TabIcon size={14} />
                       {tab.label}
@@ -1529,43 +1860,56 @@ function RecruitmentWorkspaceContent() {
                         saveLeadEdits();
                       }}
                     >
-                      <p className="lead-edit-form__hint">
-                        Check the LinkedIn profile, then correct any fields that look wrong.
-                      </p>
+                      <div className="lead-edit-form__intro">
+                        <p className="lead-edit-form__hint">
+                          Check the LinkedIn profile, then correct any fields that look wrong.
+                        </p>
+                        {(editForm.linkedin_url || selectedLeadDetails.linkedin_url) && (
+                          <a
+                            href={editForm.linkedin_url || selectedLeadDetails.linkedin_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="lead-edit-form__linkedin"
+                          >
+                            <ExternalLink size={14} />
+                            Open LinkedIn profile
+                          </a>
+                        )}
+                      </div>
 
-                      {(editForm.linkedin_url || selectedLeadDetails.linkedin_url) && (
-                        <a
-                          href={editForm.linkedin_url || selectedLeadDetails.linkedin_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="lead-edit-form__linkedin"
-                        >
-                          <ExternalLink size={14} />
-                          Open LinkedIn profile
-                        </a>
-                      )}
-
-                      {[
-                        { key: 'name', label: 'Name', required: true },
-                        { key: 'headline', label: 'Headline' },
-                        { key: 'role', label: 'Role' },
-                        { key: 'company', label: 'Company' },
-                        { key: 'location', label: 'Location' },
-                        { key: 'linkedin_url', label: 'LinkedIn URL' },
-                      ].map((field) => (
-                        <label key={field.key} className="lead-edit-form__field">
-                          <span>{field.label}</span>
-                          <input
-                            type="text"
-                            value={editForm[field.key]}
-                            required={field.required}
-                            placeholder={field.key === 'company' || field.key === 'location' ? 'Add if you have it' : undefined}
-                            onChange={(e) =>
-                              setEditForm((prev) => ({ ...prev, [field.key]: e.target.value }))
-                            }
-                          />
-                        </label>
-                      ))}
+                      <div className="lead-edit-form__fields">
+                        {[
+                          { key: 'name', label: 'Name', required: true },
+                          { key: 'role', label: 'Role' },
+                          { key: 'headline', label: 'Headline', wide: true },
+                          { key: 'company', label: 'Company' },
+                          { key: 'location', label: 'Location' },
+                          { key: 'linkedin_url', label: 'LinkedIn URL', wide: true },
+                          { key: 'contact_email', label: 'Email', type: 'email', wide: true },
+                        ].map((field) => (
+                          <label
+                            key={field.key}
+                            className={`lead-edit-form__field${field.wide ? ' lead-edit-form__field--wide' : ''}`}
+                          >
+                            <span className="lead-edit-form__label">{field.label}</span>
+                            <input
+                              type={field.type || 'text'}
+                              value={editForm[field.key] ?? ''}
+                              required={field.required}
+                              placeholder={
+                                field.key === 'company' || field.key === 'location'
+                                  ? 'Add if you have it'
+                                  : field.key === 'contact_email'
+                                    ? 'name@company.com'
+                                    : undefined
+                              }
+                              onChange={(e) =>
+                                setEditForm((prev) => ({ ...prev, [field.key]: e.target.value }))
+                              }
+                            />
+                          </label>
+                        ))}
+                      </div>
 
                       <div className="lead-edit-form__actions">
                         <button type="button" className="lead-edit-form__cancel" onClick={cancelEditingLead} disabled={savingLead}>
@@ -1578,99 +1922,148 @@ function RecruitmentWorkspaceContent() {
                     </form>
                   ) : (
                     <>
-                      <p className="individual-lead-profile__headline">
-                        {stripEmDashes(
-                          selectedLeadDetails.headline
-                          || selectedLeadDetails.role
-                          || 'Sales Professional'
-                        )}
-                      </p>
-
-                      <dl className="individual-lead-profile__facts">
-                        <div className="individual-lead-profile__fact">
-                          <dt>Company</dt>
-                          <dd className={isCompanyOrExperienceMissing(selectedLeadDetails) ? 'is-missing' : undefined}>
-                            {displayCompanyOrExperience(selectedLeadDetails)}
-                          </dd>
-                        </div>
-                        {/* Shown only when present: most job seekers are students
-                            with no employer, and an intern legitimately has both. */}
-                        {selectedLeadDetails.school && (
+                      <section className="individual-lead-profile__section" aria-label="Profile">
+                        <dl className="individual-lead-profile__facts">
                           <div className="individual-lead-profile__fact">
-                            <dt>School</dt>
-                            <dd>{stripEmDashes(selectedLeadDetails.school)}</dd>
+                            <dt>Role</dt>
+                            <dd className={isMissingField(selectedLeadDetails.role || selectedLeadDetails.headline) ? 'is-missing' : undefined}>
+                              {stripEmDashes(
+                                selectedLeadDetails.role
+                                || selectedLeadDetails.headline
+                              ) || 'Add role'}
+                            </dd>
                           </div>
-                        )}
-                        {selectedLeadDetails.past_experience && selectedLeadDetails.company && (
-                          <div className="individual-lead-profile__fact individual-lead-profile__fact--wide">
-                            <dt>Experience</dt>
-                            <dd>{stripEmDashes(selectedLeadDetails.past_experience)}</dd>
+                          <div className="individual-lead-profile__fact">
+                            <dt>Company</dt>
+                            <dd className={isCompanyOrExperienceMissing(selectedLeadDetails) ? 'is-missing' : undefined}>
+                              {displayCompanyOrExperience(selectedLeadDetails)}
+                            </dd>
                           </div>
-                        )}
-                        <div className="individual-lead-profile__fact">
-                          <dt>Location</dt>
-                          <dd className={isMissingField(selectedLeadDetails.location) ? 'is-missing' : undefined}>
-                            {displayField(selectedLeadDetails.location, 'location')}
-                          </dd>
-                        </div>
-                        <div className="individual-lead-profile__fact individual-lead-profile__fact--wide">
-                          <dt>LinkedIn</dt>
-                          <dd>
-                            {selectedLeadDetails.linkedin_url ? (
-                              <a
-                                href={selectedLeadDetails.linkedin_url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="individual-lead-profile__link"
-                              >
-                                View profile
-                                <ArrowUpRight size={12} aria-hidden="true" />
-                              </a>
-                            ) : (
-                              <span className="is-missing">Add LinkedIn</span>
-                            )}
-                          </dd>
-                        </div>
-                      </dl>
-
-                      <div className="individual-lead-profile__source">
-                        <span className="individual-lead-profile__source-label">
-                          Sourced via your query
-                          {(selectedLeadDetails.source_query || selectedLeadDetails.search_prompt) && (
-                            <>
-                              {' '}
-                              <em className="individual-lead-profile__source-query">
-                                &ldquo;{selectedLeadDetails.source_query || selectedLeadDetails.search_prompt}&rdquo;
-                              </em>
-                            </>
+                          {selectedLeadDetails.school && (
+                            <div className="individual-lead-profile__fact">
+                              <dt>School</dt>
+                              <dd>{stripEmDashes(selectedLeadDetails.school)}</dd>
+                            </div>
                           )}
-                        </span>
-                      </div>
+                          <div className="individual-lead-profile__fact">
+                            <dt>Location</dt>
+                            <dd className={isMissingField(resolveLeadLocation(selectedLeadDetails)) ? 'is-missing' : undefined}>
+                              {displayField(resolveLeadLocation(selectedLeadDetails), 'location')}
+                            </dd>
+                          </div>
+                          <div className="individual-lead-profile__fact">
+                            <dt>Email</dt>
+                            <dd className={!(selectedLeadDetails.contact_email || '').trim() ? 'is-missing' : undefined}>
+                              {(selectedLeadDetails.contact_email || '').trim() ? (
+                                <a
+                                  href={`mailto:${selectedLeadDetails.contact_email.trim()}`}
+                                  className="individual-lead-profile__link"
+                                >
+                                  {selectedLeadDetails.contact_email.trim()}
+                                </a>
+                              ) : (
+                                'Not found yet'
+                              )}
+                            </dd>
+                          </div>
+                          <div className="individual-lead-profile__fact individual-lead-profile__fact--wide">
+                            <dt>LinkedIn</dt>
+                            <dd>
+                              {selectedLeadDetails.linkedin_url ? (
+                                <a
+                                  href={selectedLeadDetails.linkedin_url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="individual-lead-profile__link"
+                                >
+                                  View profile
+                                  <ArrowUpRight size={12} aria-hidden="true" />
+                                </a>
+                              ) : (
+                                <span className="is-missing">Add LinkedIn</span>
+                              )}
+                            </dd>
+                          </div>
+                        </dl>
+
+                        <div className="individual-lead-profile__actions">
+                          <button
+                            type="button"
+                            className="individual-lead-detail__edit"
+                            onClick={() => startEditingLead(selectedLeadDetails)}
+                          >
+                            <Pencil size={14} />
+                            Edit details
+                          </button>
+                        </div>
+                      </section>
                     </>
                   )}
                 </div>
               )}
 
               {activeTab === 'compose' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div className="individual-compose-panel">
                   <div className="individual-compose-editor">
                     {noDraftExists && (
                       <div className="individual-compose-editor__banner">
                         <span className="individual-compose-editor__badge">
-                          No AI Draft
+                          No message yet
                         </span>
                       </div>
                     )}
+
+                    <div className="individual-compose-editor__top">
+                      <p className="individual-compose-editor__hint">
+                        Ask them to book a meeting. The link in the draft is their meeting booking page.
+                      </p>
+                      {(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft') !== 'sent' && (
+                        <div className="individual-compose-editor__actions">
+                          {editingDraft ? (
+                            <>
+                              <button
+                                type="button"
+                                className="individual-compose-editor__edit-btn individual-compose-editor__edit-btn--ghost"
+                                onClick={cancelEditingDraft}
+                                disabled={savingDraft}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                className="individual-compose-editor__edit-btn"
+                                onClick={finishEditingDraft}
+                                disabled={savingDraft}
+                              >
+                                {savingDraft ? 'Saving…' : 'Save message'}
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              className="individual-compose-editor__edit-btn"
+                              onClick={startEditingDraft}
+                            >
+                              <Pencil size={14} />
+                              Edit message
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
 
                     <DotScrollArea
                       className="individual-compose-editor__scroll"
                       trackNestedScroll
                     >
                       <textarea
-                        className="individual-compose-editor__textarea"
+                        ref={draftTextareaRef}
+                        className={`individual-compose-editor__textarea${editingDraft ? ' is-editing' : ''}`}
                         value={draftMessage}
+                        readOnly={!editingDraft}
                         onChange={(e) => setDraftMessage(e.target.value)}
-                        placeholder="Your outreach draft will appear here..."
+                        placeholder="Write a short note inviting them to book a meeting. Keep the booking link on its own line."
+                        aria-label="Outreach draft"
                       />
                     </DotScrollArea>
 
@@ -1687,7 +2080,7 @@ function RecruitmentWorkspaceContent() {
                             style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                           >
                             {draftCopied ? <Check size={14} /> : <Copy size={14} />}
-                            {draftCopied ? 'Copied' : 'Copy draft'}
+                            {draftCopied ? 'Copied' : 'Copy message'}
                           </button>
                         )}
                         {(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft') === 'sent' ? (
@@ -1712,31 +2105,42 @@ function RecruitmentWorkspaceContent() {
 
                   {/* Lead profile insight from sourcing */}
                   {draftReasoning && (
-                    <div style={{ padding: '16px 20px', background: COLORS.white, border: '1px solid var(--border-color)', borderRadius: '10px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', color: 'var(--text-primary)' }}>
-                        <Sparkles size={14} style={{ color: COLORS.textMuted }} />
-                        <h4 style={{ fontWeight: 600, fontSize: '0.85rem' }}>What we learned about this lead</h4>
+                    <section className="individual-lead-profile__section individual-compose-insight" aria-label="Lead insight">
+                      <div className="individual-lead-profile__section-head">
+                        <div>
+                          <h4 className="individual-lead-profile__section-label">
+                            <Sparkles size={13} aria-hidden="true" />
+                            What we learned
+                          </h4>
+                        </div>
                       </div>
-                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.82rem', lineHeight: '1.5' }}>
+                      <p className="individual-compose-insight__body">
                         {formatLeadInsight(draftReasoning)}
                       </p>
-                    </div>
+                    </section>
                   )}
                 </div>
               )}
 
               {/* Sent review after compose */}
               {activeTab === 'history' && isLatestDraftSent && (
-                <div className="glass-card" style={{ padding: '24px', border: '1px solid var(--border-color)' }}>
-                  <h4 style={{ fontWeight: 600, fontSize: '1rem', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Clock size={16} style={{ color: COLORS.oldRose }} />
-                    Sent Review
-                  </h4>
-                  
-                  {(!selectedLeadDetails.drafts || selectedLeadDetails.drafts.length === 0) ? (
-                    <div style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                      No sent outreach recorded for this prospect.
+                <section className="individual-lead-profile__section individual-funnel-section" aria-label="Sent review">
+                  <div className="individual-lead-profile__section-head">
+                    <div>
+                      <h4 className="individual-lead-profile__section-label">
+                        <Clock size={13} aria-hidden="true" />
+                        Sent review
+                      </h4>
+                      <p className="individual-lead-profile__section-hint">
+                        Outreach marked as sent for this lead.
+                      </p>
                     </div>
+                  </div>
+
+                  {(!selectedLeadDetails.drafts || selectedLeadDetails.drafts.length === 0) ? (
+                    <p className="individual-funnel-section__empty">
+                      No sent outreach recorded for this prospect.
+                    </p>
                   ) : (
                     <div className="individual-sent-timeline">
                       {selectedLeadDetails.drafts.slice().reverse().map((draft, idx) => (
@@ -1756,7 +2160,7 @@ function RecruitmentWorkspaceContent() {
                                   ? ' individual-sent-timeline__status--sent'
                                   : ' individual-sent-timeline__status--draft'
                               }`}>
-                                {draftStatusLabel(draft.status).toUpperCase()}
+                                {draftStatusLabel(draft.status)}
                               </span>
                               <span className="individual-sent-timeline__time">
                                 {draft.status === 'sent'
@@ -1776,68 +2180,51 @@ function RecruitmentWorkspaceContent() {
                       ))}
                     </div>
                   )}
-                </div>
+                </section>
               )}
 
               {/* 3. FUNNEL TAB */}
               {activeTab === 'funnel' && (
-                <div className="glass-card" style={{ padding: '24px', border: '1px solid var(--border-color)' }}>
-                  <h4 style={{ fontWeight: 600, fontSize: '1rem', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Activity size={16} style={{ color: COLORS.oldRose }} />
-                    Individual Intake Funnel
-                  </h4>
+                <section className="individual-lead-profile__section individual-funnel-section" aria-label="Intake funnel">
+                  <div className="individual-lead-profile__section-head">
+                    <div>
+                      <h4 className="individual-lead-profile__section-label">
+                        <Activity size={13} aria-hidden="true" />
+                        Intake funnel
+                      </h4>
+                      <p className="individual-lead-profile__section-hint">
+                        Live progress from this lead&apos;s tracked intake link: clicks, form activity, and meeting bookings.
+                      </p>
+                    </div>
+                  </div>
 
-                  <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '32px', lineHeight: '1.6' }}>
-                    Live progress from this lead&apos;s tracked intake link: clicks, form activity, and meeting bookings recorded from the landing page.
-                  </p>
-
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                  <ol className="individual-funnel-steps">
                     {buildIndividualFunnelSteps(selectedLeadDetails).map((step, index, steps) => (
-                      <div key={step.id} style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
-                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                          <div style={{
-                            width: '24px',
-                            height: '24px',
-                            borderRadius: '50%',
-                            background: step.completed ? RGBA.success06 : COLORS.white,
-                            border: `2px solid ${step.completed ? COLORS.success : 'var(--border-color)'}`,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            color: step.completed ? COLORS.success : 'var(--text-muted)',
-                            fontSize: '0.75rem',
-                            fontWeight: 'bold'
-                          }}>
+                      <li
+                        key={step.id}
+                        className={`individual-funnel-steps__item${step.completed ? ' is-complete' : ''}`}
+                      >
+                        <div className="individual-funnel-steps__rail" aria-hidden="true">
+                          <span className="individual-funnel-steps__dot">
                             {step.completed ? '✓' : index + 1}
-                          </div>
+                          </span>
                           {index < steps.length - 1 && (
-                            <div style={{
-                              width: '2px',
-                              height: '32px',
-                              background: step.completed && steps[index + 1].completed
-                                ? COLORS.success
-                                : 'var(--border-color)',
-                              marginTop: '4px'
-                            }}></div>
+                            <span className={`individual-funnel-steps__line${step.completed && steps[index + 1].completed ? ' is-complete' : ''}`} />
                           )}
                         </div>
-                        <div>
-                          <h5 style={{ fontWeight: 600, fontSize: '0.85rem', color: step.completed ? 'var(--text-primary)' : 'var(--text-muted)' }}>
-                            {step.label}
-                          </h5>
-                          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                            {step.desc}
-                          </p>
+                        <div className="individual-funnel-steps__copy">
+                          <h5>{step.label}</h5>
+                          <p>{step.desc}</p>
                           {step.completed && formatFunnelTimestamp(step.at) && (
-                            <p style={{ fontSize: '0.7rem', color: COLORS.success, marginTop: '4px' }}>
+                            <p className="individual-funnel-steps__time">
                               Last performed at: {formatFunnelTimestamp(step.at)}
                             </p>
                           )}
                         </div>
-                      </div>
+                      </li>
                     ))}
-                  </div>
-                </div>
+                  </ol>
+                </section>
               )}
 
               </DotScrollArea>
@@ -1847,7 +2234,7 @@ function RecruitmentWorkspaceContent() {
           <div className="individual-pipeline-empty">
             <FileText size={40} style={{ color: 'var(--text-muted)', opacity: 0.5 }} />
             <h4>Select a draft to work on</h4>
-            <p>Pick someone from your draft queue to review their profile, finish the message, or send outreach.</p>
+            <p>Pick someone from the queue to review their profile, finish the message, or send outreach.</p>
             <button type="button" className="btn-primary individual-pipeline-empty__cta" onClick={() => setWorkspaceSection('source')}>
               <Search size={14} />
               Find new leads

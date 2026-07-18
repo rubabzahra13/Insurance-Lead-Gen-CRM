@@ -3,7 +3,7 @@
 import React, { createContext } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, Users, Building2, Sparkles } from 'lucide-react';
+import { Home, Users, Building2 } from 'lucide-react';
 import { WORKSPACE_LABELS } from '../../lib/avatar-labels';
 import { BRAND } from '../../lib/brand';
 import { IndividualSegmentProvider } from '../../context/IndividualSegmentContext';
@@ -22,18 +22,28 @@ export default function DashboardLayout({ children }) {
         return WORKSPACE_LABELS.individuals.title;
       case '/business':
         return WORKSPACE_LABELS.businesses.title;
-      case '/compare':
-        return 'Engine Comparison';
       default:
         return 'Dashboard';
     }
   };
 
+  const getPageSubtitle = () => {
+    if (pathname === '/business') return WORKSPACE_LABELS.businesses.description;
+    return null;
+  };
+
+  const pageSubtitle = getPageSubtitle();
+
   const navItems = [
     { name: 'Dashboard', href: '/', icon: Home, shortName: 'Home' },
     { name: WORKSPACE_LABELS.individuals.nav, href: '/recruitment', icon: Users, shortName: 'Ind. Leads' },
-    { name: WORKSPACE_LABELS.businesses.nav, href: '/business', icon: Building2, shortName: 'Bus. Leads' },
-    { name: 'Compare Engines', href: '/compare', icon: Sparkles, shortName: 'Compare' },
+    {
+      name: WORKSPACE_LABELS.businesses.nav,
+      href: '/business',
+      icon: Building2,
+      shortName: 'Bus. Leads',
+      title: WORKSPACE_LABELS.businesses.description,
+    },
   ];
 
   return (
@@ -56,6 +66,7 @@ export default function DashboardLayout({ children }) {
                   <Link
                     href={item.href}
                     className={`menu-item-link ${isActive ? 'active' : ''}`}
+                    title={item.title || item.name}
                   >
                     <span className="menu-item-icon">
                       <IconComponent size={20} />
@@ -70,7 +81,10 @@ export default function DashboardLayout({ children }) {
 
         <div className="main-wrapper">
           <header className="topbar">
-            <h1 className="page-title">{getPageTitle()}</h1>
+            <div className="page-title-block">
+              <h1 className="page-title">{getPageTitle()}</h1>
+              {pageSubtitle && <p className="page-subtitle">{pageSubtitle}</p>}
+            </div>
             <IndividualAudienceTabs />
           </header>
 

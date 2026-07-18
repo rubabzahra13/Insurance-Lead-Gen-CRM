@@ -13,6 +13,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.services.serp_quota import fetch_serp_quota, invalidate_serp_quota_cache
+
 router = APIRouter(prefix="/api/scrape", tags=["scrape"])
 
 _root_dir = Path(__file__).resolve().parents[2]
@@ -115,10 +117,12 @@ async def _run_job(
                 job["status"] = "done"
                 job["result"] = event.get("result")
                 job["finishedAt"] = datetime.now(timezone.utc).isoformat()
+                invalidate_serp_quota_cache()
             elif event.get("type") == "error":
                 job["status"] = "error"
                 job["error"] = event.get("message")
                 job["finishedAt"] = datetime.now(timezone.utc).isoformat()
+                invalidate_serp_quota_cache()
 
     stdout_task = _track_task(asyncio.create_task(read_stdout()))
     try:
@@ -149,6 +153,12 @@ async def _run_job(
     job["subscribers"].clear()
 
 
+@router.get("/serp-quota")
+def get_serp_quota(force: bool = False):
+    """Live SerpAPI search remaining (plan_searches_left / searches_per_month)."""
+    return fetch_serp_quota(force=force)
+
+
 @router.post("")
 async def create_scrape_job(payload: ScrapeRequest):
     role = (payload.role or "").strip()
@@ -161,6 +171,13 @@ async def create_scrape_job(payload: ScrapeRequest):
 
     if not role and not query:
         raise HTTPException(status_code=400, detail="role is required")
+
+    avatar_type = (payload.avatarType or "").strip().lower()
+    if avatar_type in {"avatar1", "avatar2"} and not (location and location.get("placeId")):
+        raise HTTPException(
+            status_code=400,
+            detail="location is required — pick a city or country from the dropdown",
+        )
 
     # Prefer structured role; keep a combined query for logs / legacy.
     if role:

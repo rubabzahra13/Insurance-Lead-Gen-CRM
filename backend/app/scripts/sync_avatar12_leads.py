@@ -43,6 +43,7 @@ def sync_single_lead(lead: dict[str, Any]) -> dict[str, Any]:
     fit_evidence = lead.get("fit_evidence") or lead.get("evidence")
     if isinstance(fit_evidence, str) and fit_source == "other":
         fit_evidence = fit_evidence + WEAK_NOTE
+
     with SessionLocal() as db:
         try:
             result = persist_avatar12_lead(
@@ -58,6 +59,8 @@ def sync_single_lead(lead: dict[str, Any]) -> dict[str, Any]:
                 ) or lead.get("snippet") or lead.get("evidence"),
                 location=_mark_weak(lead.get("location"), "location", weak_fields),
                 linkedin_url=lead.get("link"),
+                contact_email=lead.get("contact_email"),
+                contact_phone=lead.get("contact_phone"),
                 search_prompt=lead.get("searchPrompt"),
                 source_snapshot=json.dumps(lead, default=str),
                 source_query=os.environ.get("SOURCE_QUERY") or lead.get("searchPrompt"),

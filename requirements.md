@@ -19,7 +19,7 @@ On LinkedIn, "Open to Work", past experience in sales or insurance (micro/auto/m
 Automated funnel A
 2
 Upgraders
-Currently at smaller insurance firms, want to move to a bigger team
+Currently at smaller insurance firms, changing jobs for better opportunities
 Automated funnel B (same as A, different messaging)
 3
 Small business owners

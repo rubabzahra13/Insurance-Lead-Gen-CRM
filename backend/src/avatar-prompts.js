@@ -61,19 +61,18 @@ function avatar1Recipe(query) {
 function avatar2Recipe(query) {
   const industry = hasIndustryWord(query) ? query : `insurance ${query}`;
   return [
-    'Target: Job UPGRADERS — people who WORK at small insurance agencies (or talk about',
-    'upskilling / career growth), and may want to move to a stronger team.',
-    'NOT CEOs, founders, owners, or business owners who want their COMPANY to upgrade',
-    '(those are a different avatar).',
+    'Target: Job UPGRADERS — working individuals changing jobs for better opportunities',
+    '(career growth / upskilling), often at small insurance agencies.',
+    'NOT CEOs, founders, owners, or people looking to grow a company/team.',
     '',
     'Run these parallel profile search lanes (same pattern as Avatar 1):',
     '',
     `LANE 1 — small/independent agency: site:linkedin.com/in ${industry} (producer OR agent) ("independent agency" OR "family-owned" OR "2-10 employees" OR "11-50 employees")`,
-    `LANE 2 — upskilling talk: site:linkedin.com/in ${industry} (producer OR agent) (upskill OR "career growth" OR "looking to grow")`,
+    `LANE 2 — career-move talk: site:linkedin.com/in ${industry} (producer OR agent) (upskill OR "career growth" OR "looking for a new role" OR "open to opportunities")`,
     `LANE 3 — insurance producer/agent in area: site:linkedin.com/in ${industry} (producer OR agent) -CEO -founder -owner`,
     '',
     'EXCLUDE anyone whose title is CEO, founder, co-founder, owner, or proprietor.',
-    'fit_evidence = company-size text, small-firm wording, OR upskilling wording.',
+    'fit_evidence = company-size text, small-firm wording, OR career-growth / job-change wording.',
   ].join('\n');
 }
 
@@ -93,11 +92,12 @@ const AVATAR_STRUCTURE_CONTEXT = {
     'fit_source = "profile" (their own profile page), "own_post", "company_page", or "other".',
   ].join('\n'),
   avatar2: [
-    '# Avatar context: Upgraders (employees at small firms / upskilling)',
-    'Include ONLY people who WORK at a small insurance/sales agency OR who talk about',
-    'upskilling / career growth / joining a stronger team.',
+    '# Avatar context: Upgraders (career movers / better opportunities)',
+    'Include ONLY working individuals who may change jobs for better opportunities,',
+    'often at a small insurance/sales agency OR who talk about upskilling / career growth.',
     'HARD EXCLUDE: CEO, founder, co-founder, owner, proprietor, managing director,',
-    'president — even if their company is small. Business owners are NOT upgraders.',
+    'president, even if their company is small. Business owners are NOT upgraders.',
+    'Do NOT target people looking to grow a team or hire. Upgraders are changing their own job.',
     'Prefer titles like producer, agent, advisor, broker, account manager.',
     'Drop actuaries, lawyers, marketers, consulate staff, and other non-producer roles.',
     'LOCATION is a hard filter from the search intent: if the query names a city,',

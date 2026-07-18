@@ -27,5 +27,15 @@ test('mapGooglePlaceToBusinessLead maps google places result into business lead 
     rating: 4.7,
     open_status: 'OPERATIONAL',
     phone: '(512) 555-0100',
+    photo_name: null,
   });
+});
+
+test('mapGooglePlaceToBusinessLead includes first photo resource name', () => {
+  const mapped = mapGooglePlaceToBusinessLead({
+    displayName: { text: 'Bakery' },
+    id: 'place-1',
+    photos: [{ name: 'places/place-1/photos/abc' }],
+  });
+  assert.equal(mapped.photo_name, 'places/place-1/photos/abc');
 });

@@ -7,7 +7,7 @@ import { MapPin, Loader2, X, ChevronDown } from 'lucide-react';
  * Search-then-select location control.
  * User must click an option in the dropdown — free text is never kept.
  */
-export default function LocationPicker({ value, onChange, invalid = false }) {
+export default function LocationPicker({ value, onChange, invalid = false, required = false }) {
   const [query, setQuery] = useState('');
   const [items, setItems] = useState([]);
   const [open, setOpen] = useState(false);
@@ -185,7 +185,8 @@ export default function LocationPicker({ value, onChange, invalid = false }) {
             onChange={handleQueryChange}
             onKeyDown={handleKeyDown}
             onFocus={() => setOpen(true)}
-            aria-label="Select a location from the list"
+            aria-label="Location (required) — select from the list"
+            aria-required={required || undefined}
             aria-autocomplete="list"
             aria-expanded={showMenu}
             aria-controls="location-picker-listbox"

@@ -234,7 +234,7 @@ export default function HomeDashboard() {
           iconBg="var(--bg-secondary)"
           iconColor={COLORS.text}
           title="Business pipeline"
-          desc="Google Places → kanban stages → follow-ups"
+          desc="Find local businesses → kanban stages → follow-ups"
           kpis={[
             {
               label: 'Avg rating',

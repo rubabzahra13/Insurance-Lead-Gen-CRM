@@ -43,7 +43,7 @@ function filterPrompt(plan, leads, batchOffset = 0) {
     `# Avatar`,
     plan.avatarType === 'avatar1'
       ? 'Job Seekers — prefer recent grads / entry-level in the requested role. Drop clearly different careers (e.g. finance when user asked software engineer). Do not drop a matching junior title just because “student”/“intern” is missing. Location marked inferred is OK if nothing contradicts the target city.'
-      : 'Job Upgraders — employees at small agencies or upskilling talk. Drop CEOs/founders/owners/partners.',
+      : 'Job Upgraders — individuals changing jobs for better opportunities, often at small agencies or with upskilling talk. Drop CEOs/founders/owners/partners. Not people looking to grow a team.',
     '',
     `# Checklist`,
     loc,
@@ -149,23 +149,34 @@ export async function filterLeadsWithLlm(leads, plan, { onLog } = {}) {
 }
 
 /**
- * Fill location only when the profile text supports a plan token.
- * Never invent the search city onto the lead (that caused wrong-location exports).
- * Soft city matching in hard veto still trusts SerpAPI geo when location is null.
+ * Fill blank lead.location from the search plan.
+ * Prefer a place token that already appears in the profile text; otherwise use
+ * the location the user sent in the query (required for avatar1/2 searches).
  */
 export function fillMissingLocationsFromPlan(leads, plan) {
-  if (!plan.location?.tokens?.length) return leads;
+  const queryLabel = String(plan?.location?.label || '').trim();
+  if (!plan?.location?.tokens?.length && !queryLabel) return leads;
+
   return leads.map((lead) => {
     if (lead.location?.trim()) return lead;
+
     const corpus = [lead.snippet, lead.fit_evidence, lead.evidence, lead.title, lead.company]
       .filter(Boolean)
       .join(' ')
       .toLowerCase();
-    const found = [...plan.location.tokens]
+    const found = [...(plan.location?.tokens || [])]
       .filter((t) => t.length >= 4 && corpus.includes(t))
       .sort((a, b) => b.length - a.length);
-    if (!found.length) return lead;
-    const label = found[0].replace(/\b\w/g, (c) => c.toUpperCase());
-    return { ...lead, location: label, locationSource: 'snippet' };
+
+    if (found.length) {
+      const label = found[0].replace(/\b\w/g, (c) => c.toUpperCase());
+      return { ...lead, location: label, locationSource: 'snippet' };
+    }
+
+    if (queryLabel) {
+      return { ...lead, location: queryLabel, locationSource: 'query' };
+    }
+
+    return lead;
   });
 }

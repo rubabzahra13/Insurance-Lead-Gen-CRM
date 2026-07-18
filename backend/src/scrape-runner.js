@@ -39,6 +39,9 @@ async function main() {
   }
 
   const avatarType = process.env.AVATAR_TYPE ?? 'avatar2';
+  if ((avatarType === 'avatar1' || avatarType === 'avatar2') && !uiLocation?.placeId) {
+    throw new Error('location is required — pick a city or country from the dropdown');
+  }
   process.env.SOURCE_QUERY = displayQuery;
 
   // Experimental fast engine: SERP API retrieval instead of Claude web search.

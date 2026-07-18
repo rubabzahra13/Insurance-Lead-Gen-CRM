@@ -44,7 +44,7 @@ export const BUSINESS_STAGES = [
   { id: 'qualified', label: 'Qualified', color: PALETTE.neutral, bg: 'rgba(75, 85, 99, 0.04)' },
   { id: 'warm', label: 'Warm', color: PALETTE.powderBlush, bg: 'rgba(247, 175, 157, 0.12)' },
   { id: 'follow_up_later', label: 'Follow Up Later', color: PALETTE.amber, bg: 'rgba(180, 83, 9, 0.06)' },
-  { id: 'sealed_won', label: 'Sealed/Won', color: PALETTE.emerald, bg: 'rgba(15, 118, 110, 0.07)' },
+  { id: 'sealed_won', label: 'Won', color: PALETTE.emerald, bg: 'rgba(15, 118, 110, 0.07)' },
   { id: 'lost', label: 'Lost', color: COLORS.error, bg: 'rgba(184, 107, 107, 0.06)' },
   { id: 'not_interested', label: 'Not Interested', color: COLORS.textMuted, bg: 'rgba(75, 85, 99, 0.03)' },
 ];

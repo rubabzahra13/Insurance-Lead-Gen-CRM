@@ -26,6 +26,14 @@ class Avatar3APIError(RuntimeError):
 def map_google_place_to_business_lead(place: dict, details: dict | None = None) -> dict:
     details = details or {}
     current_open = place.get("currentOpeningHours") or {}
+    photos = place.get("photos") if isinstance(place.get("photos"), list) else []
+    photo_name = None
+    if photos:
+        first = photos[0] if isinstance(photos[0], dict) else None
+        if first:
+            candidate = str(first.get("name") or "").strip()
+            if candidate.startswith("places/") and "/photos/" in candidate:
+                photo_name = candidate
     return {
         "business_name": (place.get("displayName") or {}).get("text") or place.get("name") or "",
         "address": place.get("formattedAddress") or place.get("vicinity") or None,
@@ -44,6 +52,7 @@ def map_google_place_to_business_lead(place: dict, details: dict | None = None) 
             or details.get("international_phone_number")
             or None
         ),
+        "photo_name": photo_name,
     }
 
 
@@ -67,6 +76,7 @@ def _dev_mock_places(query: str) -> list[dict]:
             "rating": 4.6,
             "open_status": "OPEN",
             "phone": "+1-555-0101",
+            "photo_name": None,
         },
         {
             "business_name": "Northline Contractors",
@@ -76,6 +86,7 @@ def _dev_mock_places(query: str) -> list[dict]:
             "rating": 4.3,
             "open_status": "OPEN",
             "phone": "+1-555-0102",
+            "photo_name": None,
         },
     ]
 
@@ -99,7 +110,8 @@ def search_google_places(query: str, location_bias: str | None = None, api_key: 
         "X-Goog-Api-Key": trimmed_key,
         "X-Goog-FieldMask": (
             "places.displayName,places.formattedAddress,places.id,places.rating,places.businessStatus,"
-            "places.currentOpeningHours,places.websiteUri,places.nationalPhoneNumber,places.internationalPhoneNumber"
+            "places.currentOpeningHours,places.websiteUri,places.nationalPhoneNumber,"
+            "places.internationalPhoneNumber,places.photos"
         ),
     }
 
@@ -299,5 +311,43 @@ def fetch_business_photo(place_id: str) -> tuple[str | None, str | None]:
 
     except Exception as exc:
         logger.exception("Error fetching business photo for place ID %s: %s", place_id, exc)
+        return None, None
+
+
+def is_valid_place_photo_name(photo_name: str | None) -> bool:
+    name = str(photo_name or "").strip()
+    return bool(name.startswith("places/") and "/photos/" in name and ".." not in name and "://" not in name)
+
+
+def fetch_place_photo_bytes(photo_name: str, max_width_px: int = 400) -> tuple[bytes | None, str | None]:
+    """Fetch Google Places photo media bytes for a photo resource name."""
+    import logging
+
+    logger = logging.getLogger(__name__)
+    if not is_valid_place_photo_name(photo_name):
+        return None, None
+
+    api_key = _places_api_key()
+    if not api_key:
+        return None, None
+
+    width = max(64, min(int(max_width_px or 400), 800))
+    media_url = f"https://places.googleapis.com/v1/{photo_name.strip()}/media"
+    params = {
+        "maxWidthPx": width,
+        "skipHttpRedirect": "false",
+        "key": api_key,
+    }
+
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            media_resp = client.get(media_url, params=params, follow_redirects=True)
+        if media_resp.status_code != 200:
+            logger.warning("Failed to fetch place photo media for %s status: %d", photo_name, media_resp.status_code)
+            return None, None
+        content_type = media_resp.headers.get("content-type") or "image/jpeg"
+        return media_resp.content, content_type
+    except Exception as exc:
+        logger.exception("Error fetching place photo media for %s: %s", photo_name, exc)
         return None, None
 

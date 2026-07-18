@@ -10,9 +10,10 @@ from dotenv import load_dotenv
 
 def load_root_env() -> None:
     root_env = Path(__file__).resolve().parents[2] / ".env"
-    load_dotenv(root_env)
+    # override=True so a fresh .env key wins over a stale shell-exported value.
+    load_dotenv(root_env, override=True)
     # Also allow backend/.env for local overrides.
-    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=True)
 
 
 def _force_ipv4(url: str) -> str:

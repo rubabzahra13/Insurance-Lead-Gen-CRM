@@ -1,6 +1,14 @@
 const GOOGLE_PLACES_TEXT_SEARCH = 'https://places.googleapis.com/v1/places:searchText';
 
 export function mapGooglePlaceToBusinessLead(place, details = {}) {
+  const photos = Array.isArray(place?.photos) ? place.photos : [];
+  const firstPhoto = photos[0] && typeof photos[0] === 'object' ? photos[0] : null;
+  const candidate = String(firstPhoto?.name ?? '').trim();
+  const photoName =
+    candidate.startsWith('places/') && candidate.includes('/photos/')
+      ? candidate
+      : null;
+
   return {
     business_name: place?.displayName?.text ?? place?.name ?? '',
     address: place?.formattedAddress ?? place?.vicinity ?? null,
@@ -21,6 +29,7 @@ export function mapGooglePlaceToBusinessLead(place, details = {}) {
       details?.formatted_phone_number ??
       details?.international_phone_number ??
       null,
+    photo_name: photoName,
   };
 }
 
@@ -50,7 +59,7 @@ export async function searchGooglePlaces({ query, locationBias = null, apiKey })
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': trimmedKey,
       'X-Goog-FieldMask':
-        'places.displayName,places.formattedAddress,places.id,places.rating,places.businessStatus,places.currentOpeningHours,places.websiteUri,places.nationalPhoneNumber,places.internationalPhoneNumber',
+        'places.displayName,places.formattedAddress,places.id,places.rating,places.businessStatus,places.currentOpeningHours,places.websiteUri,places.nationalPhoneNumber,places.internationalPhoneNumber,places.photos',
     },
     body: JSON.stringify(body),
   });

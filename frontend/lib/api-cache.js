@@ -19,7 +19,8 @@ export function avatar3LeadDetailKey(leadId) {
 }
 
 export function avatar3SearchKey(query) {
-  return `avatar3:search:${String(query || '').trim().toLowerCase()}`;
+  // v2: search results include photo_name for result-card images
+  return `avatar3:search:v2:${String(query || '').trim().toLowerCase()}`;
 }
 
 const memory = new Map();

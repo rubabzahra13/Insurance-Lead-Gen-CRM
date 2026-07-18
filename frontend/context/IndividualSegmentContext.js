@@ -14,7 +14,7 @@ export const LEAD_SEGMENTS = [
     id: 'avatar2',
     label: AVATAR_LABELS.avatar2,
     shortLabel: 'Job upgraders',
-    desc: 'Experienced agents ready to level up',
+    desc: 'Individuals changing jobs for better opportunities',
   },
 ];
 

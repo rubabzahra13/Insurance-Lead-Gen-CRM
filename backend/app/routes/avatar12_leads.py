@@ -16,6 +16,7 @@ from app.services.avatar12_drafts import (
     latest_avatar12_draft,
     list_avatar12_leads as service_list_avatar12_leads,
     mark_avatar12_draft_sent,
+    update_avatar12_draft,
 )
 from app.services.outreach_send import OutreachSendError
 
@@ -101,6 +102,10 @@ class SendMessageRequest(BaseModel):
     mark_only: bool = False
 
 
+class DraftUpdateRequest(BaseModel):
+    message: str
+
+
 class AvatarLeadUpdate(BaseModel):
     name: str | None = None
     headline: str | None = None
@@ -110,6 +115,8 @@ class AvatarLeadUpdate(BaseModel):
     past_experience: str | None = None
     location: str | None = None
     linkedin_url: str | None = None
+    contact_email: str | None = None
+    contact_phone: str | None = None
 
 
 @router.get("/leads")
@@ -189,6 +196,17 @@ def get_latest_draft(lead_id: uuid.UUID, db: Session = Depends(get_db)):
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
     return _draft_payload(draft)
+
+
+@router.patch("/leads/{lead_id}/drafts/latest")
+def patch_latest_draft(lead_id: uuid.UUID, payload: DraftUpdateRequest, db: Session = Depends(get_db)):
+    try:
+        draft = update_avatar12_draft(db=db, lead_id=lead_id, message=payload.message)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not draft:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return draft
 
 
 @router.post("/leads/{lead_id}/messages/send")
