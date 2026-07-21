@@ -15,9 +15,20 @@
           "includeFiles": "app/**"
         }
       }
+    },
+    "scraper": {
+      "root": "backend",
+      "entrypoint": "scraper.js",
+      "functions": {
+        "scraper.js": {
+          "maxDuration": 300
+        }
+      }
     }
   },
   "rewrites": [
+    { "source": "/api/scrape", "destination": { "service": "scraper" } },
+    { "source": "/api/scrape/(.*)", "destination": { "service": "scraper" } },
     { "source": "/api/(.*)", "destination": { "service": "backend" } },
     { "source": "/(.*)", "destination": { "service": "frontend" } }
   ]
