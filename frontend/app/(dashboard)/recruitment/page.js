@@ -17,6 +17,15 @@ import {
   setApiCache,
 } from '../../../lib/api-cache';
 import { getApiBaseUrl } from '../../../lib/apiBaseUrl';
+import MatchTierBadge from '../../../components/MatchTierBadge';
+import MatchTierFilter from '../../../components/MatchTierFilter';
+import {
+  countMatchTiers,
+  leadMatchesTierFilter,
+  matchTierSortKey,
+  resolveLeadMatchLabel,
+  resolveLeadMatchReason,
+} from '../../../lib/match-tier';
 import { 
   Sparkles, AlertCircle, Search, MapPin, 
   Briefcase, Filter, X, RotateCcw, AlertTriangle, 
@@ -29,6 +38,7 @@ const LIST_PAGE_SIZE = 10;
 const ANALYTICS_PAGE_SIZE = 10;
 
 const SORT_OPTIONS = [
+  { value: 'match_best', label: 'Best match first' },
   { value: 'newest', label: 'Newest first' },
   { value: 'oldest', label: 'Oldest first' },
   { value: 'name_asc', label: 'Name A → Z' },
@@ -78,15 +88,26 @@ function withFunnelTestLead(items) {
   return [FUNNEL_TEST_LEAD, ...list];
 }
 
+function linkedinSlugFromUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return null;
+  const match = raw.match(/linkedin\.com\/in\/([^/?#]+)/i);
+  if (!match?.[1]) return null;
+  try {
+    return decodeURIComponent(match[1]).toLowerCase().replace(/\/$/, '');
+  } catch {
+    return match[1].toLowerCase().replace(/\/$/, '');
+  }
+}
+
 /**
  * Identity for matching a lead the pipeline just returned against a row in the
  * drafts list. The LinkedIn URL is the reliable key; fall back to the name so a
  * profile without a link still matches.
  */
 function leadIdentityKey(lead) {
-  const url = lead?.linkedin_url || lead?.link || '';
-  const slug = String(url).match(/\/in\/([^/?#]+)/i)?.[1];
-  if (slug) return `in:${slug.toLowerCase()}`;
+  const slug = linkedinSlugFromUrl(lead?.linkedin_url || lead?.link || '');
+  if (slug) return `in:${slug}`;
   const name = String(lead?.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
   return name ? `name:${name}` : null;
 }
@@ -518,7 +539,8 @@ function RecruitmentWorkspaceContent() {
   const [locationOptions, setLocationOptions] = useState([]);
   const [recentRoles, setRecentRoles] = useState([]);
   const [recentLocations, setRecentLocations] = useState([]);
-  const [sortBy, setSortBy] = useState('newest');
+  const [sortBy, setSortBy] = useState('match_best');
+  const [matchTierFilter, setMatchTierFilter] = useState('all');
   const [listPage, setListPage] = useState(1);
   const [analyticsPage, setAnalyticsPage] = useState(1);
   const urlView = searchParams.get('view');
@@ -610,6 +632,7 @@ function RecruitmentWorkspaceContent() {
   // look like it did nothing.
   const [searchRun, setSearchRun] = useState(null);
   const [onlyThisSearch, setOnlyThisSearch] = useState(false);
+  const [searchRefreshing, setSearchRefreshing] = useState(false);
 
   // Right pane details state
   const [activeTab, setActiveTab] = useState('profile'); // profile | compose | history | funnel
@@ -1051,7 +1074,8 @@ function RecruitmentWorkspaceContent() {
     setStatusFilter('all');
     setRoleFilter('all');
     setLocationFilter('all');
-    setSortBy('newest');
+    setMatchTierFilter('all');
+    setSortBy('match_best');
     setListPage(1);
     
     const params = new URLSearchParams(searchParams.toString());
@@ -1196,9 +1220,13 @@ function RecruitmentWorkspaceContent() {
 
   const isFromSearchRun = useCallback(
     (lead) => {
-      if (!searchRun?.keys?.size) return false;
+      if (!searchRun) return false;
       const key = leadIdentityKey(lead);
-      return Boolean(key && searchRun.keys.has(key));
+      if (key && searchRun.keys?.has(key)) return true;
+      const runQuery = String(searchRun.query || '').trim().toLowerCase();
+      if (!runQuery) return false;
+      const leadQuery = String(lead?.source_query || lead?.search_prompt || '').trim().toLowerCase();
+      return leadQuery === runQuery;
     },
     [searchRun],
   );
@@ -1228,15 +1256,19 @@ function RecruitmentWorkspaceContent() {
         return false;
       }
 
-      if (!leadMatchesRoleFilter(lead, roleFilter)) {
+      if (!onlyThisSearch && !leadMatchesRoleFilter(lead, roleFilter)) {
         return false;
       }
 
-      if (!leadMatchesLocationFilter(lead, locationFilter)) {
+      if (!onlyThisSearch && !leadMatchesLocationFilter(lead, locationFilter)) {
         return false;
       }
 
       if (onlyThisSearch && !isFromSearchRun(lead)) {
+        return false;
+      }
+
+      if (!leadMatchesTierFilter(lead, matchTierFilter)) {
         return false;
       }
 
@@ -1253,7 +1285,17 @@ function RecruitmentWorkspaceContent() {
       const bRun = isFromSearchRun(b) ? 1 : 0;
       if (aRun !== bRun) return bRun - aRun;
 
+      if (aRun && bRun) {
+        const tierDiff = matchTierSortKey(a) - matchTierSortKey(b);
+        if (tierDiff !== 0) return tierDiff;
+      }
+
       switch (sortBy) {
+        case 'match_best': {
+          const tierDiff = matchTierSortKey(a) - matchTierSortKey(b);
+          if (tierDiff !== 0) return tierDiff;
+          return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+        }
         case 'oldest':
           return new Date(a.created_at || 0) - new Date(b.created_at || 0);
         case 'name_asc':
@@ -1271,7 +1313,7 @@ function RecruitmentWorkspaceContent() {
     });
 
     return sorted;
-  }, [leads, textSearch, leadSegment, statusFilter, roleFilter, locationFilter, sortBy, onlyThisSearch, isFromSearchRun]);
+  }, [leads, textSearch, leadSegment, statusFilter, roleFilter, locationFilter, sortBy, matchTierFilter, onlyThisSearch, isFromSearchRun]);
 
   const listPageCount = Math.max(1, Math.ceil(filteredLeads.length / LIST_PAGE_SIZE));
   const safeListPage = Math.min(listPage, listPageCount);
@@ -1289,7 +1331,7 @@ function RecruitmentWorkspaceContent() {
 
   useEffect(() => {
     setListPage(1);
-  }, [textSearch, leadSegment, statusFilter, roleFilter, locationFilter, sortBy, onlyThisSearch]);
+  }, [textSearch, leadSegment, statusFilter, roleFilter, locationFilter, sortBy, matchTierFilter, onlyThisSearch]);
 
   useEffect(() => {
     if (listPage > listPageCount) setListPage(listPageCount);
@@ -1336,7 +1378,16 @@ function RecruitmentWorkspaceContent() {
     statusFilter !== 'all' ? statusFilter : '',
     roleFilter !== 'all' ? roleFilter : '',
     locationFilter !== 'all' ? locationFilter : '',
+    matchTierFilter !== 'all' ? matchTierFilter : '',
   ].filter(Boolean).length;
+
+  const segmentMatchTierCounts = useMemo(() => {
+    const segmentLeads = leads.filter((l) => l.avatar_type === leadSegment);
+    const scoped = onlyThisSearch
+      ? segmentLeads.filter((l) => isFromSearchRun(l))
+      : segmentLeads;
+    return countMatchTiers(scoped);
+  }, [leads, leadSegment, onlyThisSearch, isFromSearchRun]);
 
   const activeSegmentMeta = LEAD_SEGMENTS.find((segment) => segment.id === leadSegment) || LEAD_SEGMENTS[0];
 
@@ -1595,31 +1646,38 @@ function RecruitmentWorkspaceContent() {
         <div className="individual-section individual-section--source">
           <IndividualSearchPanel
             activeSegment={leadSegment}
-            onComplete={(run) => {
+            onComplete={async (run) => {
               const keys = new Set(
                 (run?.leads || []).map(leadIdentityKey).filter(Boolean),
               );
-              const role = run?.role ? rememberRoleOption(run.role) : null;
-              const location = run?.location ? rememberLocationOption(run.location) : null;
+              if (run?.role) rememberRoleOption(run.role);
+              if (run?.location) rememberLocationOption(run.location);
               setSearchRun({
                 query: run?.query || '',
                 keys,
                 count: keys.size,
-                role: role || null,
-                location: location || null,
+                role: run?.role || null,
+                location: run?.location || null,
               });
-              // Land on the results of the run just finished, not the whole list.
+              // Scope to this run only — do not also apply role/location filters;
+              // those hide valid matches when headlines differ from the query text.
               setOnlyThisSearch(keys.size > 0);
               setTextSearch('');
               setStatusFilter('all');
-              setRoleFilter(role || 'all');
-              setLocationFilter(location || 'all');
+              setRoleFilter('all');
+              setLocationFilter('all');
+              setMatchTierFilter('all');
               setListFiltersOpen(false);
               setListPage(1);
               invalidateApiCache([API_CACHE_KEYS.avatar12Leads, API_CACHE_KEYS.funnel]);
-              fetchLeads({ force: true });
-              fetchFunnelData({ force: true });
               setWorkspaceSection('leads');
+              setSearchRefreshing(true);
+              try {
+                await fetchLeads({ force: true });
+              } finally {
+                setSearchRefreshing(false);
+              }
+              fetchFunnelData({ force: true });
             }}
           />
         </div>
@@ -1752,12 +1810,18 @@ function RecruitmentWorkspaceContent() {
                 value={sortBy}
                 options={SORT_OPTIONS}
                 onChange={setSortBy}
-                neutralValue="newest"
+                neutralValue="match_best"
                 iconOnly
                 triggerIcon={<ArrowUpDown size={16} aria-hidden="true" />}
               />
             </div>
           </div>
+
+          <MatchTierFilter
+            value={matchTierFilter}
+            onChange={setMatchTierFilter}
+            counts={segmentMatchTierCounts}
+          />
 
           {listFiltersOpen && (
           <div className="individual-list-filters-panel">
@@ -1809,7 +1873,7 @@ function RecruitmentWorkspaceContent() {
               </p>
             )}
 
-            {(textSearch || statusFilter !== 'all' || roleFilter !== 'all' || locationFilter !== 'all' || sortBy !== 'newest') && (
+            {(textSearch || statusFilter !== 'all' || roleFilter !== 'all' || locationFilter !== 'all' || matchTierFilter !== 'all' || sortBy !== 'match_best') && (
               <div className="individual-list-filters-footer">
                 <span>Filtered: {filteredLeads.length} of {leads.filter((l) => l.avatar_type === leadSegment).length} drafts</span>
                 <button
@@ -1828,9 +1892,14 @@ function RecruitmentWorkspaceContent() {
 
         {/* Scrollable list content */}
         <DotScrollArea className="workspace-list-pane__scroll">
-          {loading && leads.length === 0 ? (
+          {searchRefreshing || (loading && leads.length === 0) ? (
             /* Skeleton list loader */
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {searchRefreshing && searchRun?.count > 0 && (
+                <p style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.82rem', margin: '4px 0 8px' }}>
+                  Loading {searchRun.count} lead{searchRun.count === 1 ? '' : 's'} from your search…
+                </p>
+              )}
               {[1, 2, 3, 4, 5].map((idx) => (
                 <div key={idx} className="glass-card" style={{ padding: '16px', border: '1px solid var(--border-color)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
@@ -1861,17 +1930,30 @@ function RecruitmentWorkspaceContent() {
               <Briefcase size={40} style={{ color: 'var(--text-muted)' }} />
               <div>
                 <h5 style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '6px' }}>
-                  {leads.length === 0 || !leads.some((l) => l.avatar_type === leadSegment)
+                  {onlyThisSearch && searchRun?.count > 0
+                    ? 'Your search found leads — try showing all'
+                    : leads.length === 0 || !leads.some((l) => l.avatar_type === leadSegment)
                     ? `No ${activeSegmentMeta.label.toLowerCase()} drafts yet`
                     : 'No drafts match your search or filters.'}
                 </h5>
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', lineHeight: '1.4', maxWidth: '280px' }}>
-                  {leads.length === 0 || !leads.some((l) => l.avatar_type === leadSegment)
+                  {onlyThisSearch && searchRun?.count > 0
+                    ? 'If this stays empty, click Show all below or run the search again.'
+                    : leads.length === 0 || !leads.some((l) => l.avatar_type === leadSegment)
                     ? `Head to Find New Leads to search for ${activeSegmentMeta.label.toLowerCase()}. New matches will appear here as drafts ready to review and send.`
                     : 'Try clearing search or filters.'}
                 </p>
               </div>
-              {(leads.length === 0 || !leads.some((l) => l.avatar_type === leadSegment)) && (
+              {onlyThisSearch && searchRun?.count > 0 && (
+                <button
+                  type="button"
+                  className="chip-fallback-btn"
+                  onClick={() => setOnlyThisSearch(false)}
+                >
+                  Show all drafts
+                </button>
+              )}
+              {(leads.length === 0 || !leads.some((l) => l.avatar_type === leadSegment)) && !(onlyThisSearch && searchRun?.count > 0) && (
                 <button type="button" onClick={() => setWorkspaceSection('source')} className="btn-primary" style={{ padding: '8px 16px', fontSize: '0.75rem' }}>
                   Find new leads
                 </button>
@@ -1887,6 +1969,7 @@ function RecruitmentWorkspaceContent() {
                 const companyMissing = isCompanyOrExperienceMissing(lead);
                 const locationMissing = isMissingField(resolveLeadLocation(lead));
                 const subtitle = stripEmDashes(lead.headline || lead.role || '').trim();
+                const matchLabel = resolveLeadMatchLabel(lead);
 
                 return (
                   <div
@@ -1899,7 +1982,10 @@ function RecruitmentWorkspaceContent() {
                     ].filter(Boolean).join(' ')}
                   >
                     <div className="outreach-lead-card__top">
-                      <span className="outreach-lead-card__name">{lead.name}</span>
+                      <div className="outreach-lead-card__name-row">
+                        {matchLabel ? <MatchTierBadge label={matchLabel} /> : null}
+                        <span className="outreach-lead-card__name">{lead.name}</span>
+                      </div>
                       <div className="outreach-lead-card__top-actions">
                         <span className={`outreach-lead-card__status outreach-lead-card__status--${draftStatus}`}>
                           {draftStatusLabel(draftStatus)}
@@ -1999,11 +2085,19 @@ function RecruitmentWorkspaceContent() {
                     <span className="individual-lead-detail__type-badge">
                       {individualShortLabel(selectedLeadDetails.avatar_type)}
                     </span>
+                    {resolveLeadMatchLabel(selectedLeadDetails) ? (
+                      <MatchTierBadge label={resolveLeadMatchLabel(selectedLeadDetails)} size="md" />
+                    ) : null}
                     <span className={`individual-lead-detail__status individual-lead-detail__status--${(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft')}`}>
                       {draftStatusLabel(selectedLeadDetails.drafts?.[selectedLeadDetails.drafts.length - 1]?.status || 'draft')}
                     </span>
                   </div>
                   <h3 className="individual-lead-detail__name">{selectedLeadDetails.name}</h3>
+                  {resolveLeadMatchReason(selectedLeadDetails) ? (
+                    <p className="individual-lead-detail__match-reason">
+                      {resolveLeadMatchReason(selectedLeadDetails)}
+                    </p>
+                  ) : null}
                   {(selectedLeadDetails.source_query || selectedLeadDetails.search_prompt) && (
                     <p className="individual-lead-detail__found">
                       Found via query &ldquo;{selectedLeadDetails.source_query || selectedLeadDetails.search_prompt}&rdquo;

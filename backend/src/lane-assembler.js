@@ -2,6 +2,7 @@
 // Google Boolean is built in code — AI supplies roles, synonyms, and discovery phrases.
 
 import { buildDiscoveryClause } from './discovery-phrases.js';
+import { isSmallUsaCity, usaLocationFallbacks } from './usa-search-expand.js';
 
 function recentGradYears() {
   const year = new Date().getFullYear();
@@ -57,6 +58,58 @@ export function buildRoleClause(roleTerms = [], roleSynonyms = [], { maxTerms = 
   return `(${selected.map(quoteTerm).join(' OR ')})`;
 }
 
+/** Space-separated role string — reuses buildRoleClause filtering (no industry hardcoding). */
+export function buildSimpleRoleWords(plan, { max = 4 } = {}) {
+  const hasPrimary = (plan.roleTerms || []).length || (plan.roleSynonyms || []).length;
+  const clause = hasPrimary
+    ? buildRoleClause(plan.roleTerms || [], plan.roleSynonyms || [], { maxTerms: max })
+    : buildRoleClause([], plan.roleSynonyms || plan.relatedTitles || [], { maxTerms: max });
+  if (!clause) return '';
+  return clause
+    .slice(1, -1)
+    .split(' OR ')
+    .map((s) => s.trim().replace(/^"|"$/g, ''))
+    .join(' ');
+}
+
+function dedupeLanesByQuery(lanes) {
+  const seen = new Set();
+  return lanes.filter((lane) => {
+    const q = String(lane?.query || '').trim();
+    if (!q || seen.has(q)) return false;
+    seen.add(q);
+    return true;
+  });
+}
+
+/** Simplified lanes from AI intent — reliable when Boolean OR queries return empty. */
+export function assembleSimplifiedRecallLanes(avatarType, plan, { maxRoleWords = 5 } = {}) {
+  const loc = locationPhrase(plan.location);
+  const locPart = loc ? ` ${loc}` : '';
+  const excludes = avatarType === 'avatar2' ? ` ${lightExcludes()}` : '';
+  const roleWords = buildSimpleRoleWords(plan, { max: maxRoleWords });
+  if (!roleWords) return [];
+
+  const lanes = [
+    {
+      query: `site:linkedin.com/in ${roleWords}${locPart}${excludes}`,
+      num: 25,
+      note: 'simplified AI role recall (space-separated titles)',
+    },
+  ];
+
+  const related = buildSimpleRoleWords({ roleSynonyms: plan.relatedTitles }, { max: 3 });
+  if (related) {
+    lanes.push({
+      query: `site:linkedin.com/in ${related}${locPart}${excludes}`,
+      num: 20,
+      note: 'simplified related-title recall',
+    });
+  }
+
+  return lanes;
+}
+
 function locationPhrase(location) {
   if (!location) return '';
   const city = String(location.city || '').trim();
@@ -68,6 +121,53 @@ function locationPhrase(location) {
     return country ? `"${country}"` : '';
   }
   return label ? `"${label}"` : '';
+}
+
+function lightExcludes() {
+  return '-CEO -founder -"co-founder" -owner -proprietor';
+}
+
+/** USA metro/state lanes when the selected city is too small for LinkedIn recall. */
+export function assembleUsaRecallLanes(avatarType, plan, { simplified = false } = {}) {
+  const location = plan.location;
+  if (!location || !isSmallUsaCity(location)) return [];
+
+  const roleWords = buildSimpleRoleWords(plan, { max: simplified ? 3 : 5 });
+  if (!roleWords) return [];
+
+  const excludes = avatarType === 'avatar2' ? ` ${lightExcludes()}` : '';
+  const lanes = [];
+
+  for (const fb of usaLocationFallbacks(location)) {
+    lanes.push({
+      query: `site:linkedin.com/in ${roleWords} ${fb.phrase}${excludes}`,
+      num: 25,
+      note: fb.note,
+      usaRecall: fb.type,
+      serpLocation: fb.serpLocation,
+    });
+
+    if (!simplified && (plan.relatedTitles || []).length) {
+      const related = buildSimpleRoleWords({ roleSynonyms: plan.relatedTitles }, { max: 3 });
+      if (related) {
+        lanes.push({
+          query: `site:linkedin.com/in ${related} ${fb.phrase}${excludes}`,
+          num: 20,
+          note: `${fb.note} — related titles`,
+          usaRecall: fb.type,
+          serpLocation: fb.serpLocation,
+        });
+      }
+    }
+  }
+
+  return lanes;
+}
+
+function appendUsaRecallLanes(lanes, avatarType, plan) {
+  if (!isSmallUsaCity(plan.location)) return lanes;
+  const recall = assembleUsaRecallLanes(avatarType, plan);
+  return [...lanes, ...recall];
 }
 
 /**
@@ -119,52 +219,98 @@ export function assembleLanesFromIntent(avatarType, plan) {
       });
     }
 
-    return { source: 'assembled', lanes };
-  }
-
-  if (avatarType === 'avatar2') {
-    // Broad recall — hard veto drops owners/CEOs after structuring.
-    const fromIntent = buildRoleClause(plan.roleTerms, plan.roleSynonyms, { maxTerms: 6 });
-    const roles = fromIntent
-      ? `(${fromIntent.replace(/^\(|\)$/g, '')} OR producer OR agent OR broker OR advisor OR "account manager")`
-      : '(producer OR agent OR "insurance agent" OR "insurance producer" OR broker OR advisor OR "account manager")';
-    const industry = ' (insurance OR "insurance agency" OR "insurance agent")';
-    const smallFirm =
-      '("independent agency" OR "family-owned" OR "2-10 employees" OR "11-50 employees" OR "small agency" OR boutique)';
-    const upskill =
-      '(upskill OR upskilling OR "career growth" OR "looking to grow" OR "grow my book")';
-    const lightExcludes = '-CEO -founder -"co-founder" -owner -proprietor';
-    const cityHint = plan.location?.city
-      ? ` ${String(plan.location.city).replace(/\b\w/g, (c) => c.toUpperCase())}`
-      : '';
-
-    const lanes = [
-      {
-        query: `site:linkedin.com/in${cityHint} ${roles}${industry} ${smallFirm} ${lightExcludes}`,
-        num: 25,
-        note: 'producer/agent at small or independent agency',
-      },
-      {
-        query: `site:linkedin.com/in${cityHint} ${roles}${industry} ${upskill} ${lightExcludes}`,
-        num: 25,
-        note: 'producer/agent talking about upskilling or career growth',
-      },
-      {
-        query: `site:linkedin.com/in${cityHint} ${roles}${industry} ${lightExcludes}`,
-        num: 25,
-        note: 'insurance producer/agent in target area',
-      },
-    ];
-
-    if (discoveryClause) {
+    const relatedClause = buildRoleClause([], plan.relatedTitles || [], { maxTerms: 8 });
+    if (relatedClause) {
       lanes.push({
-        query: `site:linkedin.com/in${cityHint} ${roles}${industry} ${discoveryClause} ${lightExcludes}`,
+        query: `site:linkedin.com/in ${relatedClause}${locPart}${industryFallback}`,
         num: 25,
-        note: 'local agency-style discovery for this search',
+        note: 'related titles from AI intent (near-match recall)',
       });
     }
 
-    return { source: 'assembled', lanes };
+    return { source: 'assembled', lanes: appendUsaRecallLanes(lanes, avatarType, plan) };
+  }
+
+  if (avatarType === 'avatar2') {
+    const smallCity = isSmallUsaCity(plan.location);
+    const fromIntent = buildRoleClause(plan.roleTerms, plan.roleSynonyms, { maxTerms: 10 });
+    const synonymOnly = buildRoleClause([], plan.roleSynonyms || [], { maxTerms: 10 });
+    const relatedClause = buildRoleClause([], plan.relatedTitles || [], { maxTerms: 8 });
+    const roles = fromIntent || roleClause;
+    const lightExcludesStr = lightExcludes();
+    const simpleRoles = buildSimpleRoleWords(plan, { max: 4 });
+    const cityHint = plan.location?.city
+      ? ` ${String(plan.location.city).replace(/\b\w/g, (c) => c.toUpperCase())}`
+      : '';
+    // Small USA cities: skip useless micro-city lane; recall lanes use Reno/state instead.
+    const locSuffix = smallCity ? '' : locPart || cityHint;
+
+    const lanes = [];
+
+    if (roles) {
+      lanes.push({
+        query: `site:linkedin.com/in${roles}${locSuffix} ${lightExcludesStr}`,
+        num: 25,
+        note: 'primary role titles from AI intent',
+      });
+    }
+
+    // Dedicated synonym lane — catches profiles that use variant titles not in the OR mix above.
+    if (synonymOnly && synonymOnly !== roles) {
+      lanes.push({
+        query: `site:linkedin.com/in ${synonymOnly}${locSuffix} ${lightExcludesStr}`,
+        num: 25,
+        note: 'synonym title expansion from AI intent',
+      });
+    }
+
+    if (relatedClause) {
+      lanes.push({
+        query: `site:linkedin.com/in ${relatedClause}${locSuffix} ${lightExcludesStr}`,
+        num: 25,
+        note: 'related titles from AI intent (near-match recall)',
+      });
+    }
+
+    const signalClause = buildDiscoveryClause([
+      ...(plan.includeSignals || []),
+      ...(plan.discoveryPhrases || []),
+    ].slice(0, 6));
+    if (signalClause && roles) {
+      lanes.push({
+        query: `site:linkedin.com/in${roles}${locSuffix} ${signalClause} ${lightExcludesStr}`,
+        num: 25,
+        note: 'credentials and industry signals from AI intent',
+      });
+    } else if (discoveryClause && roles) {
+      lanes.push({
+        query: `site:linkedin.com/in${roles}${locSuffix} ${discoveryClause} ${lightExcludesStr}`,
+        num: 25,
+        note: 'local discovery phrases for this search',
+      });
+    }
+
+    if (!lanes.length && simpleRoles) {
+      lanes.push({
+        query: `site:linkedin.com/in ${simpleRoles}${locSuffix} ${lightExcludesStr}`,
+        num: 25,
+        note: 'simplified role recall',
+      });
+    }
+
+    if (!lanes.length) {
+      lanes.push({
+        query: `site:linkedin.com/in${locSuffix} ${lightExcludesStr}`,
+        num: 25,
+        note: 'broad recall — role terms from query',
+      });
+    }
+
+    const simplified = assembleSimplifiedRecallLanes('avatar2', plan, { maxRoleWords: 4 });
+    return {
+      source: 'assembled',
+      lanes: dedupeLanesByQuery([...simplified, ...appendUsaRecallLanes(lanes, avatarType, plan)]),
+    };
   }
 
   return { source: 'assembled', lanes: [] };

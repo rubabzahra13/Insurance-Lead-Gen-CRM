@@ -15,7 +15,8 @@ import { enrichLeadEmails } from './email-serp-enrich.js';
 import { linkedinSlugFromUrl, mapWithConcurrency, personIdentityKey } from './utils.js';
 import { buildAvatarSearch } from './avatar-prompts.js';
 import { buildSearchPlan, applyPlanCodeFilter } from './search-plan.js';
-import { filterLeadsWithLlm, fillMissingLocationsFromPlan } from './lead-llm-filter.js';
+import { scoreLeadsWithLlm, fillMissingLocationsFromPlan } from './lead-llm-filter.js';
+import { rankLeadsByMatchTier, isExportableTier } from './match-tiers.js';
 import { runSerpLanes as _runLanes, serpResultsToRawItems, serpAvailable } from './serp-search.js';
 
 function progressEmitter(options) {
@@ -73,17 +74,19 @@ function applyConfidenceScores(leads, avatarType) {
 }
 
 function partitionForExport(leads) {
-  const minConfidence = Number(process.env.MIN_CONFIDENCE ?? 0.55);
+  const minConfidence = Number(process.env.MIN_CONFIDENCE ?? 0.45);
   const accepted = [];
   const rejected = [];
   for (const lead of leads) {
-    if (lead.status === 'rejected' || lead.confidence < minConfidence) rejected.push(lead);
+    const tierOk = isExportableTier(lead.match_tier);
+    const confOk = (lead.confidence ?? 0) >= minConfidence;
+    if (!tierOk || lead.status === 'rejected' || !confOk) rejected.push(lead);
     else accepted.push(lead);
   }
   return { accepted, rejected };
 }
 
-async function retrieveSerpItems(plan, progress) {
+async function retrieveSerpItems(plan, progress, lanes = plan.lanes) {
   const geo = plan.location
     ? { gl: plan.location.gl, serpLocation: plan.location.serpLocation }
     : null;
@@ -92,11 +95,12 @@ async function retrieveSerpItems(plan, progress) {
     progress.log(
       `  location filter: ${plan.location.label}` +
         (plan.location.scope === 'country' ? ' (any city in country)' : ' (city strict)') +
+        (plan.location.usaSmallCityRecall ? ' + USA metro/state recall' : '') +
         (plan.location.gl ? ` gl=${plan.location.gl}` : ''),
     );
   }
 
-  const results = await _runLanes(plan.lanes, {
+  const results = await _runLanes(lanes, {
     geo,
     onLane: ({ query, count }) => progress.log(`  search: ${count} results`),
   });
@@ -136,11 +140,17 @@ export async function runSerpLeadPipeline(userQuery, options = {}) {
     lanesSource: plan.lanesSource,
   });
 
-  const rawItems = await progress.step('Profile search (parallel lanes)', () =>
+  let rawItems = await progress.step('Profile search (parallel lanes)', () =>
     retrieveSerpItems(plan, progress),
   );
 
-  const profileCount = rawItems.filter((i) => i.title !== 'model_research_notes').length;
+  let profileCount = rawItems.filter((i) => i.title !== 'model_research_notes').length;
+  if (profileCount === 0 && plan.fallbackLanes?.length) {
+    progress.log('Primary search empty — retrying with simplified recall lanes...');
+    rawItems = await retrieveSerpItems(plan, progress, plan.fallbackLanes);
+    profileCount = rawItems.filter((i) => i.title !== 'model_research_notes').length;
+  }
+
   if (profileCount === 0) {
     progress.log('No LinkedIn results from Google for this query.');
     const empty = { leads: [], rejected: [], stats: { researched: 0, exported: 0 } };
@@ -222,19 +232,19 @@ export async function runSerpLeadPipeline(userQuery, options = {}) {
   }
   leads = fillMissingLocationsFromPlan(codePass.leads, plan);
 
-  const llmPass = await progress.step('AI quality filter', () =>
-    filterLeadsWithLlm(leads, plan, { onLog: (msg) => progress.log(msg) }),
+  const llmPass = await progress.step('AI match scoring', () =>
+    scoreLeadsWithLlm(leads, plan, { onLog: (msg) => progress.log(msg) }),
   );
   leads = fillMissingLocationsFromPlan(llmPass.leads, plan);
 
-  options.onProgress?.({ type: 'leads_preview', leads: leads.slice(0, maxResults), stage: 'filtered' });
+  options.onProgress?.({ type: 'leads_preview', leads: rankLeadsByMatchTier(leads).slice(0, maxResults), stage: 'filtered' });
 
   leads = await progress.step('Verifying profiles & scoring', async () => {
     const verified = await verifyLeadUrls(leads);
     return applyConfidenceScores(verified, avatarType);
   });
 
-  const ranked = rankLeads(leads);
+  const ranked = rankLeadsByMatchTier(rankLeads(leads));
   const { accepted, rejected } = partitionForExport(ranked);
   let exportLeads = accepted.slice(0, maxResults);
 
@@ -257,6 +267,9 @@ export async function runSerpLeadPipeline(userQuery, options = {}) {
         exportLeads.length > 0
           ? Number((exportLeads.reduce((s, l) => s + l.confidence, 0) / exportLeads.length).toFixed(2))
           : 0,
+      perfectMatches: exportLeads.filter((l) => l.match_tier === 'perfect').length,
+      strongMatches: exportLeads.filter((l) => l.match_tier === 'strong').length,
+      nearMatches: exportLeads.filter((l) => l.match_tier === 'near').length,
     },
   };
 

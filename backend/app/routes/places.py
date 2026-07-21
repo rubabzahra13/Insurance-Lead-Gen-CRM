@@ -43,6 +43,11 @@ def _is_geo_suggestion(types: list[str] | None) -> bool:
     return any(t in geo for t in types)
 
 
+def _is_metro_or_county(types: list[str] | None) -> bool:
+    type_set = set(types or [])
+    return "administrative_area_level_2" in type_set
+
+
 def _normalize_place_text(value: str) -> str:
     text = unicodedata.normalize("NFD", value or "")
     text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
@@ -58,15 +63,29 @@ def _country_from_secondary(secondary: str) -> str:
 
 
 def _type_priority(types: list[str] | None) -> int:
-    """Lower is better: city → country → admin region."""
+    """Lower is better: city → metro/county → state → country."""
     type_set = set(types or [])
     if "locality" in type_set or "postal_town" in type_set:
         return 0
-    if "country" in type_set:
+    if "administrative_area_level_2" in type_set:
         return 1
-    if "administrative_area_level_1" in type_set or "administrative_area_level_2" in type_set:
+    if "administrative_area_level_1" in type_set:
         return 2
-    return 3
+    if "country" in type_set:
+        return 3
+    return 4
+
+
+def _query_mentions_place_context(query: str, secondary: str) -> bool:
+    """True when the user typed enough to pick a specific state/region."""
+    q = _normalize_place_text(query)
+    if not q:
+        return False
+    for part in (secondary or "").split(","):
+        token = _normalize_place_text(part.strip())
+        if len(token) >= 2 and token in q:
+            return True
+    return False
 
 
 def _is_city(types: list[str] | None) -> bool:
@@ -86,17 +105,74 @@ def _secondary_is_country_only(secondary: str) -> bool:
     return len(parts) <= 1
 
 
-def _dedupe_place_suggestions(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _is_simple_state_city_secondary(secondary: str) -> bool:
+    """True for rows like 'TX, USA' — many US towns share a name."""
+    parts = [p.strip() for p in (secondary or "").split(",") if p.strip()]
+    if len(parts) != 2:
+        return False
+    state, country = parts[0], _normalize_place_text(parts[1])
+    return len(state) <= 3 and country in {"usa", "us", "united states"}
+
+
+def _collapse_obscure_duplicate_cities(
+    items: list[dict[str, Any]],
+    query: str,
+    *,
+    max_same_name_cities: int = 1,
+) -> list[dict[str, Any]]:
+    """
+    For bare city searches (e.g. "Dallas"), keep Google's top-ranked city match
+    and drop obscure same-name US towns (Dallas GA, Dallas OR, …).
+    Metro/county/state rows and distinct places (different region text) are kept.
+    """
+    if not items:
+        return items
+
+    kept: list[dict[str, Any]] = []
+    simple_us_city_counts: dict[str, int] = {}
+
+    for item in items:
+        types = item.get("types") or []
+        if not _is_city(types):
+            kept.append(item)
+            continue
+
+        secondary = str(item.get("secondaryText") or "")
+        if _query_mentions_place_context(query, secondary):
+            kept.append(item)
+            continue
+
+        if not _is_simple_state_city_secondary(secondary):
+            kept.append(item)
+            continue
+
+        main = _normalize_place_text(str(item.get("mainText") or item.get("label") or ""))
+        seen = simple_us_city_counts.get(main, 0)
+        if seen >= max_same_name_cities:
+            continue
+        simple_us_city_counts[main] = seen + 1
+        kept.append(item)
+
+    return kept
+
+
+def _dedupe_place_suggestions(
+    items: list[dict[str, Any]],
+    query: str = "",
+) -> list[dict[str, Any]]:
     """Prefer cities, drop redundant admin regions, collapse bare vs country-qualified labels."""
+
+    indexed = [{**item, "_sourceIndex": idx} for idx, item in enumerate(items)]
 
     def sort_key(item: dict[str, Any]) -> tuple:
         return (
             _type_priority(item.get("types")),
             0 if str(item.get("secondaryText") or "").strip() else 1,
             len(str(item.get("label") or "")),
+            item.get("_sourceIndex", 999),
         )
 
-    ranked = sorted(items, key=sort_key)
+    ranked = sorted(indexed, key=sort_key)
     chosen: list[dict[str, Any]] = []
 
     for item in ranked:
@@ -168,7 +244,14 @@ def _dedupe_place_suggestions(items: list[dict[str, Any]]) -> list[dict[str, Any
 
         chosen.append(item)
 
-    return chosen
+    chosen = _collapse_obscure_duplicate_cities(chosen, query)
+    chosen.sort(
+        key=lambda item: (
+            _type_priority(item.get("types")),
+            item.get("_sourceIndex", 999),
+        )
+    )
+    return [{k: v for k, v in item.items() if k != "_sourceIndex"} for item in chosen]
 
 
 @router.get("/autocomplete")
@@ -189,6 +272,7 @@ async def places_autocomplete(q: str = Query(..., min_length=1, max_length=120))
         "input": text,
         "includedPrimaryTypes": [
             "locality",
+            "administrative_area_level_2",
             "administrative_area_level_1",
             "country",
         ],
@@ -243,7 +327,7 @@ async def places_autocomplete(q: str = Query(..., min_length=1, max_length=120))
             }
         )
 
-    return {"items": _dedupe_place_suggestions(items)[:8]}
+    return {"items": _dedupe_place_suggestions(items, text)[:8]}
 
 
 @router.get("/details")

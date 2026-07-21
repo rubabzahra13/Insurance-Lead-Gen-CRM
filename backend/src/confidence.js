@@ -144,6 +144,17 @@ export function scoreLeadConfidence(lead, context = {}) {
     reasons.push('grad_profile_completeness');
   }
 
+  if (lead.match_tier === 'perfect') {
+    score += 0.1;
+    reasons.push('perfect_match_tier');
+  } else if (lead.match_tier === 'strong') {
+    score += 0.06;
+    reasons.push('strong_match_tier');
+  } else if (lead.match_tier === 'near') {
+    score += 0.02;
+    reasons.push('near_match_tier');
+  }
+
   const confidence = Math.max(0, Math.min(1, Number(score.toFixed(2))));
 
   return {
@@ -196,6 +207,9 @@ const REASON_LABELS = {
   clear_producer_title: 'Title clearly matches a producer/agent role',
   growth_or_agency_fit: 'Profile shows agency or growth fit signals',
   grad_profile_completeness: 'Graduate profile has school and title filled in',
+  perfect_match_tier: 'AI scored as Best Match for this search',
+  strong_match_tier: 'AI scored as Good Match for this search',
+  near_match_tier: 'AI scored as Possible Match for this search',
 };
 
 function describeReasons(reasons) {

@@ -10,57 +10,24 @@ import {
   mergeFilterTokens,
 } from './location-resolver.js';
 import { applyHardVeto } from './plan-filter.js';
-import { assembleLanesFromIntent } from './lane-assembler.js';
+import { assembleLanesFromIntent, assembleSimplifiedRecallLanes, assembleUsaRecallLanes } from './lane-assembler.js';
+import { isSmallUsaCity, usaLocationFallbacks } from './usa-search-expand.js';
 import { sanitizeDiscoveryPhrases } from './discovery-phrases.js';
 
 const OPENAI_API = 'https://api.openai.com/v1/chat/completions';
-
-const QUERY_STOPWORDS = new Set([
-  'a', 'an', 'the', 'in', 'on', 'at', 'for', 'and', 'or', 'with', 'who', 'looking',
-  'seeking', 'new', 'find', 'leads', 'lead', 'people', 'major', 'majors', 'recent',
-  'graduate', 'graduates', 'entry', 'level', 'near', 'around',
-]);
 
 const AVATAR_RULES = {
   avatar1: {
     label: 'Recent graduates (entry-level)',
     goal:
       'Recent graduates (last ~3 years), ideally with internship experience. Role comes from the user query — do not force insurance/sales/finance when the user named another career.',
-    default_role_terms: [],
-    default_include: [
-      'recent graduate',
-      'class of',
-      'internship',
-      'entry level',
-      'student',
-      'new grad',
-    ],
-    default_exclude_titles: ['ceo', 'founder', 'owner', 'director', 'vp', 'president', 'partner', 'principal'],
+    default_exclude_titles: [],
     default_exclude_roles: [],
   },
   avatar2: {
     label: 'Upgraders (employees at small firms)',
     goal:
-      'Insurance producers/agents WORKING at small agencies OR talking about upskilling/career growth. NOT CEOs/founders/owners.',
-    default_role_terms: [
-      'insurance producer',
-      'insurance agent',
-      'producer',
-      'agent',
-      'advisor',
-      'broker',
-      'account manager',
-    ],
-    default_include: [
-      'small agency',
-      'independent agency',
-      'family-owned',
-      '2-10 employees',
-      '11-50 employees',
-      'upskill',
-      'career growth',
-      'looking to grow',
-    ],
+      'People in the career the user named — working at small/mid firms or signaling upskilling/career growth. NOT CEOs/founders/owners. Expand the user\'s words into every LinkedIn title variant recruiters actually search for in that industry.',
     default_exclude_titles: [
       'ceo',
       'founder',
@@ -96,44 +63,11 @@ function normList(value) {
   return [...new Set(value.map((v) => String(v ?? '').trim().toLowerCase()).filter(Boolean))];
 }
 
-const KNOWN_ROLE_PHRASES = [
-  'software engineer', 'software developer', 'software engineering',
-  'cyber security', 'cybersecurity', 'information security', 'security analyst',
-  'data scientist', 'data analyst', 'machine learning', 'ml engineer',
-  'product manager', 'project manager', 'business analyst',
-  'insurance producer', 'insurance agent', 'insurance advisor', 'account manager',
-  'sales rep', 'sales representative', 'financial analyst', 'finance major',
-  'claims adjuster', 'underwriting associate', 'full stack developer', 'fullstack developer',
-  'frontend developer', 'backend developer', 'web developer',
-];
-
 /** Role-ish terms that literally appear in the user's query / role text. */
 export function extractRoleTermsFromQuery(userQuery) {
   const raw = String(userQuery ?? '').trim();
-  const lower = raw.toLowerCase();
-  if (!lower) return [];
-
-  const phrases = [];
-  for (const p of KNOWN_ROLE_PHRASES) {
-    if (lower.includes(p)) phrases.push(p);
-  }
-
-  // UI role box is often the full role ("software engineer") — keep it as one term.
-  const words = lower.match(/[a-z][a-z0-9+#.-]{1,}/g) || [];
-  const contentWords = words.filter((w) => !QUERY_STOPWORDS.has(w));
-  if (contentWords.length >= 2 && contentWords.length <= 5 && raw.length <= 60) {
-    const asPhrase = contentWords.join(' ');
-    if (!phrases.includes(asPhrase)) phrases.unshift(asPhrase);
-  }
-
-  // "finance graduate" / "cyber security student" → also keep the career stem.
-  for (const p of [...phrases]) {
-    const stem = p.replace(/\s+(graduate|graduates|student|students|major|majors)$/i, '').trim();
-    if (stem && stem !== p && stem.length >= 3) phrases.push(stem);
-  }
-
-  const fromWords = contentWords.filter((w) => w.length >= 3);
-  return [...new Set([...phrases, ...fromWords])];
+  if (!raw) return [];
+  return [raw.toLowerCase()];
 }
 
 /**
@@ -141,34 +75,12 @@ export function extractRoleTermsFromQuery(userQuery) {
  * Never inject avatar industry defaults when the user named a role.
  */
 export function resolvePlanRoleTerms(userQuery, aiTerms, avatarDefaults) {
+  const ai = normList(aiTerms).filter((t) => t.length >= 2);
+  if (ai.length) return ai;
   const fromQuery = extractRoleTermsFromQuery(userQuery);
-  const ai = normList(aiTerms);
+  if (fromQuery.length) return fromQuery;
   const defaults = normList(avatarDefaults);
-  const lower = String(userQuery ?? '').toLowerCase();
-
-  const groundedAi = ai.filter(
-    (t) => fromQuery.some((q) => q.includes(t) || t.includes(q)) || lower.includes(t),
-  );
-
-  const primary = [...new Set([...fromQuery, ...groundedAi])].filter((t) => t.length >= 3);
-  // Prefer multi-word phrases; drop tokens covered by a longer phrase — except
-  // career stems of "finance graduate" / "cyber student" which titles rarely copy verbatim.
-  const sorted = primary.sort((a, b) => b.length - a.length);
-  const compacted = [];
-  for (const t of sorted) {
-    const parent = compacted.find((c) => c !== t && c.includes(t));
-    if (parent) {
-      const stemOfGrad = new RegExp(`(?:^|\\s)${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+(graduate|graduates|student|students|major|majors)$`);
-      if (stemOfGrad.test(parent)) {
-        compacted.push(t);
-        continue;
-      }
-      continue;
-    }
-    compacted.push(t);
-  }
-  if (compacted.length) return compacted;
-  return defaults.filter((t) => t.length >= 3);
+  return defaults.filter((t) => t.length >= 2);
 }
 
 /**
@@ -178,65 +90,26 @@ export function resolvePlanRoleTerms(userQuery, aiTerms, avatarDefaults) {
  */
 export function resolvePlanRoleSynonyms(userQuery, aiSynonyms, roleTerms, aiRoleTerms = []) {
   const synonyms = normList(aiSynonyms);
-  const GENERIC = new Set([
-    'graduate', 'graduates', 'grad', 'grads', 'student', 'students', 'intern', 'internship',
-    'entry', 'level', 'major', 'majors', 'new', 'recent', 'aspiring',
-    'insurance', 'sales', 'finance', 'professional', 'specialist', 'associate',
-    'tech', 'talent', 'people', 'candidates', 'professionals',
-  ]);
   const roleSet = new Set(normList(roleTerms));
-  // Titles AI suggested that grounding dropped from role_terms (e.g. "tech grads"
-  // → "software engineer") — keep them as synonyms so lanes actually search them.
-  const expandedFromAi = normList(aiRoleTerms).filter((t) => {
-    if (roleSet.has(t) || GENERIC.has(t)) return false;
-    if (/\s/.test(t)) return t.length >= 5;
-    return t.length >= 6;
-  });
+  const expandedFromAi = normList(aiRoleTerms).filter((t) => !roleSet.has(t) && t.length >= 2);
+  const cleaned = [...synonyms, ...expandedFromAi].filter((s) => s.length >= 2 && !roleSet.has(s));
+  return [...new Set(cleaned)].slice(0, 16);
+}
 
-  const roleBlob = [...roleTerms, userQuery].join(' ').toLowerCase();
-  const cleaned = [...synonyms, ...expandedFromAi].filter((s) => {
-    if (GENERIC.has(s)) return false;
-    if (s.length < 3) return false;
-    if (roleSet.has(s)) return false;
-    if (/\s/.test(s)) return true;
-    return s.length >= 5;
-  });
-
-  const unique = [...new Set(cleaned)];
-
-  // If user asked for a tech role, drop insurance/sales synonym noise.
-  const techish =
-    /software|developer|engineer|cyber|security|data|programmer|coder|fullstack|frontend|backend|\btech\b|\bit\b|\bcs\b/i.test(
-      roleBlob,
-    );
-  if (techish) {
-    return unique.filter((s) => !/\binsurance\b|\bagent\b|\bproducer\b|\bbroker\b/i.test(s)).slice(0, 10);
-  }
-  return unique.slice(0, 10);
+/** Adjacent titles AI assigns at runtime for near-match scoring and broader search lanes. */
+export function resolvePlanRelatedTitles(aiRelated, roleTerms, roleSynonyms) {
+  const blocked = new Set([...normList(roleTerms), ...normList(roleSynonyms)]);
+  return normList(aiRelated)
+    .filter((t) => t.length >= 2 && !blocked.has(t))
+    .slice(0, 12);
 }
 
 function resolveIncludeSignals(userQuery, aiSignals, avatarDefaults) {
-  const ai = normList(aiSignals);
-  const defaults = normList(avatarDefaults);
-  return [...new Set([...defaults, ...ai])];
+  return normList(aiSignals);
 }
 
-/** Offline safety net when AI intent is unavailable — category → LinkedIn titles. */
-function fallbackCategorySynonyms(userQuery, avatarType) {
-  const lower = String(userQuery || '').toLowerCase();
-  if (avatarType === 'avatar1') {
-    if (/\btech\b|\bit\b|\bcs\b|computer|software|developer|engineer/.test(lower) && /\b(grad|student|talent|junior|entry)/.test(lower)) {
-      return ['software engineer', 'software developer', 'computer science', 'developer'];
-    }
-    if (/\btech\b/.test(lower) && !/\binsurance|sales|finance|producer|agent/.test(lower)) {
-      return ['software engineer', 'software developer', 'computer science', 'developer'];
-    }
-  }
-  if (avatarType === 'avatar2') {
-    if (/\bproduc/.test(lower) || /\bagents?\b/.test(lower) || /\bbrokers?\b/.test(lower)) {
-      return ['insurance producer', 'insurance agent', 'broker', 'advisor', 'account manager'];
-    }
-  }
+/** Offline safety net when AI intent is unavailable — no hardcoded title injection. */
+function fallbackCategorySynonyms() {
   return [];
 }
 
@@ -253,20 +126,24 @@ export function planToStructureContext(plan) {
     : 'Location: copy only if present in result text.';
 
   const roles = [...new Set([...(plan.roleTerms || []), ...(plan.roleSynonyms || [])])];
+  const related = plan.relatedTitles?.length
+    ? `Related titles (near match): ${plan.relatedTitles.join(', ')}`
+    : '';
 
   return [
     '# Runtime search checklist',
     plan.summary,
     loc,
     `Role focus: ${roles.join(', ')}`,
+    related,
     `Fit signals (preferred): ${plan.includeSignals.join(', ')}`,
     `Never include titles: ${plan.excludeTitles.join(', ')}`,
     `Drop off-role: ${plan.excludeRoles.join(', ')}`,
     plan.avatarType === 'avatar1'
       ? 'Prefer recent graduates / entry-level / students / interns in the requested role.'
-      : 'Only EMPLOYEES at small agencies or people talking about upskilling — NEVER CEOs/founders/owners.',
+      : 'Employees open to growth — NEVER CEOs/founders/owners.',
     'CRITICAL: Never invent title, company, or location. Use null when not in the result text.',
-    'Extract every person who plausibly matches. Code filters will cull hard misses.',
+    'Extract every person who plausibly matches the role family. AI match scoring ranks them after.',
   ].join('\n');
 }
 
@@ -288,21 +165,31 @@ function interpretIntentPrompt(userQuery, avatarType, groundedLocation = null) {
   const discoveryRules =
     avatarType === 'avatar1'
       ? [
-          '- discovery_phrases (avatar1): 3-6 short phrases people in THIS market type on LinkedIn.',
-          '  Prefer the ACRONYMS and short names grads actually write (often WITHOUT the word',
-          '  "university") plus common degree labels for the role. Example STYLE only: local',
-          '  campus acronyms, "BSCS", "computer science" — generate for the grounded location.',
-          '  Do NOT invent obscure names. Empty if no location.',
+          '- discovery_phrases (avatar1): 4-8 short phrases people in THIS market write on LinkedIn.',
+          '  Include local campus acronyms, degree labels, program names, and hiring keywords for the role.',
+          '  Entry-level titles: use "associate/junior/trainee + role" OR the plain role alone — both appear on LinkedIn.',
+          '  Example STYLE: "BSCS", "UT Austin", "nursing degree", "BSN", "marketing internship",',
+          '  "software engineer", "junior software engineer", "sales associate", "associate sales representative",',
+          '  "financial analyst", "analyst intern", "insurance agent", "associate insurance agent", "registered nurse".',
+          '  Generate for the grounded location and the specific career — not generic filler.',
         ].join('\n')
       : [
-          '- discovery_phrases (avatar2): 3-6 short agency-style or local insurance-industry phrases',
-          '  people in THIS market put on LinkedIn (independent agency wording, local carrier/agency',
-          '  style labels, license-adjacent phrases). Not a global mega-brand list. Empty if no location.',
+          '- discovery_phrases (avatar2): 4-8 industry-specific phrases for THIS career in THIS market.',
+          '  Insurance → independent agency, licensed producer, P&C, life & health. Finance → Series 65,',
+          '  CFP, wealth management, RIA. Sales → quota carrier, B2B SaaS, SDR team. Mortgage → NMLS,',
+          '  home lending, retail banking. Use what real profiles in that industry actually say.',
         ].join('\n');
 
   return [
-    'You resolve a recruiter search into INTENT only (roles + synonyms + signals + discovery phrases).',
-    'Do NOT write Google/SerpAPI queries. Output JSON only — no markdown.',
+    'You are a specialized LinkedIn lead-finding expert for recruiters.',
+    'Your job: turn a casual recruiter query into the richest possible title map so Google',
+    'can find EVERY plausible person — direct hits first, then adjacent roles.',
+    'Think like a sourcer who knows industry jargon, abbreviations, license titles, and how',
+    'people actually label themselves on LinkedIn (not HR job-post language).',
+    '',
+    'Output INTENT only (roles + synonyms + related titles + discovery). No Google queries.',
+    'The user may write a full sentence — interpret the ROLE they want.',
+    'Output JSON only — no markdown.',
     '',
     `# Avatar: ${rules.label}`,
     rules.goal,
@@ -314,28 +201,37 @@ function interpretIntentPrompt(userQuery, avatarType, groundedLocation = null) {
     '',
     '# Output schema',
     '{',
-    '  "role_terms": ["primary roles the user asked for — usually 1-3 phrases"],',
-    '  "role_synonyms": ["concrete LinkedIn job titles in the same career family"],',
-    '  "discovery_phrases": ["local school/agency phrases for THIS place — see rules"],',
-    '  "include_signals": ["optional extra fit phrases beyond avatar defaults"],',
-    '  "exclude_titles": ["extra title excludes if needed"],',
-    '  "exclude_roles": ["careers that must NOT match this search"],',
+    '  "role_terms": ["2-4 core role phrases distilled from the user text"],',
+    '  "role_synonyms": ["8-14 concrete LinkedIn titles = PERFECT/STRONG matches — be exhaustive"],',
+    '  "related_titles": ["5-8 adjacent titles = NEAR match only — same industry, one step removed"],',
+    '  "discovery_phrases": ["local + industry phrases for THIS place and career"],',
+    '  "include_signals": ["optional extra fit phrases, credentials, license abbreviations"],',
+    '  "exclude_titles": ["senior/exec titles to avoid if relevant"],',
+    '  "exclude_roles": ["clearly wrong careers for THIS query"],',
     '  "summary": "one sentence: who to find"',
     '}',
     '',
-    '# Rules',
-    '- role_terms must reflect the user text (e.g. "software engineer" stays software engineer).',
-    '- If the user is VAGUE (e.g. "tech grads", "finance students", "producers"), put CONCRETE',
-    '  LinkedIn titles in role_synonyms (tech → software engineer, software developer, computer science;',
-    '  producers → insurance producer, insurance agent, broker, advisor).',
-    '- Also put common degree / field labels for THAT career into role_synonyms or include_signals',
-    '  when helpful (e.g. nursing → "nursing student", BSN; architecture → "architecture student").',
-    '- role_synonyms: expand carefully; same career family only.',
-    '- Do NOT add insurance/sales/finance synonyms unless the user asked for those careers.',
+    '# Lead-finder rules (be creative and thorough)',
+    '- Parse natural language: "people who do tele sales for insurance" → telesales + insurance sales + phone sales.',
+    '- role_terms: the core role(s) distilled — not the whole sentence verbatim.',
+    '- role_synonyms: EVERY LinkedIn title that is a direct hit for what the user asked.',
+    '  Include: formal titles, informal variants, abbreviations (RN, LO, FA, SDR, CSR), licensed titles,',
+    '  compound titles ("Life Insurance Agent", "Licensed Insurance Producer"), and regional wording.',
+    '  Insurance telesales → insurance telesales representative, insurance sales agent, insurance producer,',
+    '  licensed insurance agent, phone sales insurance, insurance customer service (if they sell).',
+    '  Financial advisor → financial advisor, wealth advisor, investment advisor representative, financial consultant,',
+    '  private wealth advisor, financial planner (if client-facing).',
+    '  Do NOT put adjacent/support roles in role_synonyms — those go in related_titles.',
+    '- related_titles: genuinely adjacent — one step away (CSR/call center for telesales; insurance broker for',
+    '  life agent; BDR for inside sales). NOT titles that are direct synonyms.',
+    '- If vague ("tech grads"), expand aggressively in role_synonyms: software engineer, developer, SWE, etc.',
+    '- If colloquial ("tele sales"), normalize ALL LinkedIn variants into role_synonyms.',
+    '- include_signals: credentials and industry keywords (NMLS, Series 6/7, CFP, LUTCF, licensed, producer).',
+    '- Do NOT inject insurance/sales/finance unless the user asked for those careers.',
     discoveryRules,
     '- discovery_phrases: short plain phrases only — no OR/AND, no site:, no quotes in the string.',
-    '- exclude_roles: list clearly wrong careers for THIS query (e.g. for software engineer: finance, nurse).',
-    '- Keep lists short and precise.',
+    '- exclude_roles: clearly wrong careers only (nurse when user asked software engineer).',
+    '- Err on MORE synonyms rather than fewer — empty Google results hurt more than a broad synonym list.',
   ].join('\n');
 }
 
@@ -349,15 +245,15 @@ async function interpretIntentWithOpenAI(userQuery, avatarType, groundedLocation
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify({
       model,
-      temperature: 0,
+      temperature: 0.15,
       messages: [
         {
           role: 'system',
           content:
-            'You output strict JSON search INTENT only: roles, synonyms, discovery_phrases, signals, excludes, summary. ' +
-            'For vague queries, expand into real LinkedIn job titles in role_synonyms. ' +
-            'discovery_phrases are local market hints for this location only — never Google query strings. ' +
-            'Never invent a location.',
+            'You are a specialized LinkedIn lead-finding expert. Output strict JSON search INTENT only: ' +
+            'role_terms, role_synonyms (be exhaustive — every direct LinkedIn title variant), related_titles ' +
+            '(adjacent only), discovery_phrases, include_signals, excludes, summary. ' +
+            'Interpret natural-language role descriptions like a senior sourcer. Never invent a location.',
         },
         { role: 'user', content: interpretIntentPrompt(userQuery, avatarType, groundedLocation) },
       ],
@@ -384,7 +280,7 @@ export function normalizePlan(raw, userQuery, avatarType, resolved = {}) {
   const roleTerms = resolvePlanRoleTerms(
     userQuery,
     raw?.role_terms,
-    rules.default_role_terms,
+    [],
   );
   const roleSynonyms = resolvePlanRoleSynonyms(
     userQuery,
@@ -401,6 +297,7 @@ export function normalizePlan(raw, userQuery, avatarType, resolved = {}) {
           roleTerms,
           [],
         );
+  const relatedTitles = resolvePlanRelatedTitles(raw?.related_titles, roleTerms, withFallbackSynonyms);
   const discoveryPhrases = sanitizeDiscoveryPhrases(raw?.discovery_phrases);
   const includeSignals = resolveIncludeSignals(userQuery, raw?.include_signals, rules.default_include);
   const excludeTitles = normList([...(rules.default_exclude_titles), ...(raw?.exclude_titles || [])]);
@@ -408,20 +305,27 @@ export function normalizePlan(raw, userQuery, avatarType, resolved = {}) {
 
   const summary = String(raw?.summary ?? `${rules.label}: ${userQuery}`).trim();
 
+  const enrichedLocation = enrichUsaLocation(location);
+
   const planCore = {
     avatarType,
     userQuery: String(userQuery ?? '').trim(),
     summary,
     roleTerms,
     roleSynonyms: withFallbackSynonyms,
+    relatedTitles,
     discoveryPhrases,
-    location,
+    location: enrichedLocation,
     includeSignals,
     excludeTitles,
     excludeRoles,
   };
 
   const assembled = assembleLanesFromIntent(avatarType, planCore);
+  const fallbackLanes = [
+    ...assembleSimplifiedRecallLanes(avatarType, planCore),
+    ...assembleUsaRecallLanes(avatarType, planCore, { simplified: true }),
+  ].filter((lane, index, all) => all.findIndex((l) => l.query === lane.query) === index);
   const base = buildAvatarSearch(avatarType, userQuery);
 
   return {
@@ -430,6 +334,8 @@ export function normalizePlan(raw, userQuery, avatarType, resolved = {}) {
     locationStripped,
     locationSource: resolved.locationSource ?? null,
     lanes: assembled.lanes || [],
+    fallbackLanes,
+    usaSmallCityRecall: Boolean(enrichedLocation?.usaSmallCityRecall),
     lanesSource: assembled.source || 'assembled',
     hop2: null,
     structureContext: `${base.structureContext}\n\n${planToStructureContext(planCore)}`,
@@ -445,7 +351,7 @@ async function buildFallbackPlan(userQuery, avatarType, { onLog, uiLocation } = 
       source: 'fallback',
       role_terms: extractRoleTermsFromQuery(userQuery),
       role_synonyms: [],
-      include_signals: rules.default_include,
+      include_signals: [],
       exclude_titles: rules.default_exclude_titles,
       exclude_roles: rules.default_exclude_roles,
       summary: `${rules.label}: ${userQuery}`,
@@ -461,6 +367,20 @@ async function buildFallbackPlan(userQuery, avatarType, { onLog, uiLocation } = 
 }
 
 export { queryMentionsGeographicPlace as querySpecifiesLocation };
+
+function enrichUsaLocation(location) {
+  if (!location || !isSmallUsaCity(location)) return location;
+  const fallbacks = usaLocationFallbacks(location);
+  const recallTokens = [
+    ...new Set(fallbacks.flatMap((f) => f.mustInclude || [])),
+  ];
+  return {
+    ...location,
+    usaSmallCityRecall: true,
+    recallTokens,
+    recallLabel: fallbacks.map((f) => f.note).join('; '),
+  };
+}
 
 export async function buildSearchPlan(userQuery, avatarType, { onLog, uiLocation, role } = {}) {
   const roleText = String(role || userQuery || '').trim();
@@ -500,8 +420,14 @@ export async function buildSearchPlan(userQuery, avatarType, { onLog, uiLocation
       if (plan.roleSynonyms.length) {
         onLog?.(`  synonyms: ${plan.roleSynonyms.slice(0, 8).join(', ')}`);
       }
+      if (plan.relatedTitles?.length) {
+        onLog?.(`  related: ${plan.relatedTitles.slice(0, 8).join(', ')}`);
+      }
       if (plan.discoveryPhrases?.length) {
         onLog?.(`  discovery: ${plan.discoveryPhrases.slice(0, 6).join(', ')}`);
+      }
+      if (plan.usaSmallCityRecall) {
+        onLog?.(`  USA small-market recall: ${plan.location?.recallLabel || 'metro + state lanes added'}`);
       }
       return plan;
     } catch (error) {

@@ -1,12 +1,25 @@
 export function parseJsonFromText(text) {
   if (!text?.trim()) return null;
 
+  const trimmed = text.trim();
+
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced) {
     try {
       return JSON.parse(fenced[1].trim());
     } catch {
       // fall through
+    }
+  }
+
+  if (trimmed.startsWith('[')) {
+    const arrayMatch = trimmed.match(/^\[[\s\S]*\]/);
+    if (arrayMatch) {
+      try {
+        return JSON.parse(arrayMatch[0]);
+      } catch {
+        // fall through
+      }
     }
   }
 

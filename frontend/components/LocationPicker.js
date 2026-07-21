@@ -19,6 +19,14 @@ export default function LocationPicker({ value, onChange, invalid = false, requi
   const selectingRef = useRef(false);
   const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
 
+function locationAreaHint(types = []) {
+  const set = new Set(types || []);
+  if (set.has('administrative_area_level_2')) return 'Metro / county area';
+  if (set.has('administrative_area_level_1')) return 'State / region';
+  if (set.has('country')) return 'Whole country';
+  return null;
+}
+
   const selected = Boolean(value?.placeId);
   const showMenu = open && !selected;
 
@@ -233,7 +241,9 @@ export default function LocationPicker({ value, onChange, invalid = false, requi
 
           {!loading && items.length > 0 && (
             <ul className="location-picker__menu" role="listbox">
-              {items.map((item) => (
+              {items.map((item) => {
+                const areaHint = locationAreaHint(item.types);
+                return (
                 <li key={item.placeId} role="option">
                   <button
                     type="button"
@@ -247,13 +257,15 @@ export default function LocationPicker({ value, onChange, invalid = false, requi
                     <span className="location-picker__option-text">
                       <span className="location-picker__option-main">{item.mainText || item.label}</span>
                       {item.secondaryText && (
-                        <span className="location-picker__option-sub">{item.secondaryText}</span>
+                        <span className="location-picker__option-sub">
+                          {areaHint ? `${areaHint} · ${item.secondaryText}` : item.secondaryText}
+                        </span>
                       )}
                     </span>
                     <span className="location-picker__option-action">Select</span>
                   </button>
                 </li>
-              ))}
+              );})}
             </ul>
           )}
         </div>

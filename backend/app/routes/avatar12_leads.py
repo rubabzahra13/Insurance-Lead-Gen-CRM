@@ -47,8 +47,29 @@ class AvatarLeadCreate(BaseModel):
     source_query: str | None = None
 
 
+import json
+
+def _match_fields_from_snapshot(source_snapshot: str | None) -> dict:
+    if not source_snapshot:
+        return {}
+    try:
+        snap = json.loads(source_snapshot)
+        if not isinstance(snap, dict):
+            return {}
+        out = {}
+        if snap.get("match_tier"):
+            out["match_tier"] = snap.get("match_tier")
+        if snap.get("match_label"):
+            out["match_label"] = snap.get("match_label")
+        if snap.get("match_reason"):
+            out["match_reason"] = snap.get("match_reason")
+        return out
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
 def _lead_payload(lead: AvatarLead) -> dict:
-    return {
+    payload = {
         "id": str(lead.id),
         "avatar_type": lead.avatar_type.value if lead.avatar_type else None,
         "name": lead.name,
@@ -69,6 +90,8 @@ def _lead_payload(lead: AvatarLead) -> dict:
         "created_at": lead.created_at,
         "updated_at": lead.updated_at,
     }
+    payload.update(_match_fields_from_snapshot(lead.source_snapshot))
+    return payload
 
 
 def _draft_payload(draft) -> dict:

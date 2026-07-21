@@ -45,7 +45,11 @@ export function leadMatchesPlanLocation(lead, location) {
 
   // Explicit profile location that contradicts the required city → drop.
   if (location.scope === 'city' && (location.mustInclude || []).length && locField) {
-    const locOk = location.mustInclude.some((token) => tokenHit(locField, token));
+    const acceptTokens = [
+      ...(location.mustInclude || []),
+      ...(location.usaSmallCityRecall ? location.recallTokens || [] : []),
+    ];
+    const locOk = acceptTokens.some((token) => tokenHit(locField, token));
     if (!locOk) return false;
   }
 
@@ -56,7 +60,11 @@ export function leadMatchesPlanLocation(lead, location) {
 
   // City/region strict scope.
   const must = location.mustInclude || [];
-  const mustHit = must.length === 0 || must.some((token) => tokenHit(corpus, token));
+  let mustHit = must.length === 0 || must.some((token) => tokenHit(corpus, token));
+
+  if (!mustHit && location.usaSmallCityRecall && location.recallTokens?.length) {
+    mustHit = location.recallTokens.some((token) => tokenHit(corpus, token));
+  }
 
   if (!mustHit && location.scope === 'city') {
     // LinkedIn SERP snippets often omit the city even when Google was geo-scoped.
@@ -217,29 +225,13 @@ function hasIncludeMatch(lead, plan) {
   return (plan.includeSignals || []).some((s) => s.length >= 3 && blob.includes(s));
 }
 
-/** Avatar 1: recent grad AND searched role. Avatar 2: producer + fit signal. */
+/** Avatar fit — minimal code gates; role matching is scored by AI at runtime. */
 export function leadMatchesAvatarSignals(lead, plan) {
   if (!leadPassesExcludes(lead, plan)) return false;
-  const blob = leadBlob(lead);
-
-  if (plan.avatarType === 'avatar1') {
-    if (!hasRoleMatch(lead, plan)) return false;
-    const title = String(lead.title || lead.headline || lead.role || '');
-    // Prefer explicit recent-grad signals; also allow non-senior titles that
-    // already match the searched role (many juniors omit "student"/"intern").
-    const hasGrad = RECENT_GRAD_RE.test(blob) || hasIncludeMatch(lead, plan);
-    if (hasGrad) return true;
-    return Boolean(title.trim()) && !SENIOR_TITLE_RE.test(title);
-  }
 
   if (plan.avatarType === 'avatar2') {
     const title = String(lead.title || lead.headline || lead.role || '');
-    const roleOk = hasProducerRole(title) || hasRoleMatch(lead, plan);
-    const fitOk =
-      hasUpgraderFitSignal(blob, lead)
-      || hasIncludeMatch(lead, plan)
-      || (roleOk && Boolean(String(lead.company ?? '').trim()) && !isOwnerOrFounderTitle(title));
-    return roleOk && fitOk;
+    if (isOwnerOrFounderTitle(title)) return false;
   }
 
   return true;

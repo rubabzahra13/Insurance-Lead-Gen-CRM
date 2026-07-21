@@ -49,7 +49,11 @@ export async function runOneSearch(query, num, geo = null) {
       throw new Error(`SerpApi error ${res.status}: ${body.slice(0, 160)}`);
     }
     const data = await res.json();
-    if (data.error) throw new Error(`SerpApi: ${data.error}`);
+    if (data.error) {
+      // Google sometimes returns no results for over-constrained Boolean queries.
+      if (/hasn't returned any results/i.test(String(data.error))) return [];
+      throw new Error(`SerpApi: ${data.error}`);
+    }
     return (data.organic_results ?? []).map((r) => ({
       title: r.title ?? '',
       link: r.link ?? '',
@@ -90,7 +94,10 @@ export async function runOneSearch(query, num, geo = null) {
 export async function runSerpLanes(lanes, { onLane, geo } = {}) {
   const settled = await Promise.allSettled(
     lanes.map(async (lane) => {
-      const results = await runOneSearch(lane.query, lane.num ?? 20, geo);
+      const laneGeo = lane.serpLocation
+        ? { ...geo, serpLocation: lane.serpLocation }
+        : geo;
+      const results = await runOneSearch(lane.query, lane.num ?? 20, laneGeo);
       onLane?.({ query: lane.query, count: results.length });
       return results.map((r) => ({ ...r, laneNote: lane.note ?? null }));
     }),

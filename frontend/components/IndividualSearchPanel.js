@@ -6,6 +6,9 @@ import { refreshDashboard } from '../lib/dashboard-events';
 import { toFriendlyTrace } from '../lib/pipeline-trace';
 import { COLORS } from '../lib/colors';
 import { getApiBaseUrl } from '../lib/apiBaseUrl';
+import MatchTierBadge from './MatchTierBadge';
+import { MatchTierSummary } from './MatchTierFilter';
+import { countMatchTiers, matchTierSortKey, resolveLeadMatchLabel } from '../lib/match-tier';
 
 const PIPELINE_STEPS = [
   {
@@ -29,7 +32,7 @@ const PIPELINE_STEPS = [
     number: 3,
     label: 'Filter matches',
     message: 'Structuring profiles and filtering against the checklist',
-    match: /structur|ai-reading|quality filter|reading & structuring/i,
+    match: /structur|ai-reading|match scoring|quality filter|reading & structuring/i,
   },
   {
     key: 'verifying',
@@ -102,7 +105,7 @@ const FIT_SOURCE_LABELS = {
 };
 
 function mapPipelineLeads(rawLeads) {
-  return rawLeads.map((lead) => ({
+  const mapped = rawLeads.map((lead) => ({
     name: lead.name,
     company: withoutStatusPhrase(lead.company) || null,
     location: lead.location || null,
@@ -110,8 +113,11 @@ function mapPipelineLeads(rawLeads) {
     linkedin_url: lead.link || null,
     fit_evidence: lead.fit_evidence || null,
     fit_source: lead.fit_source || null,
-    weak_fields: Array.isArray(lead.weak_fields) ? lead.weak_fields : [],
+    match_tier: lead.match_tier || null,
+    match_label: lead.match_label || null,
+    match_reason: lead.match_reason || null,
   }));
+  return [...mapped].sort((a, b) => matchTierSortKey(a) - matchTierSortKey(b));
 }
 
 function getStepNodeState(stepNumber, searchState) {
@@ -441,7 +447,11 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
       location: selectedLocation?.label || selectedLocation?.mainText || null,
       leads: (rawLeads || []).map((lead) => ({
         name: lead.name || null,
-        linkedin_url: lead.link || null,
+        linkedin_url: lead.link || lead.linkedin_url || null,
+        link: lead.link || lead.linkedin_url || null,
+        match_tier: lead.match_tier || null,
+        match_label: lead.match_label || null,
+        match_reason: lead.match_reason || null,
       })),
     });
   };
@@ -697,13 +707,16 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
 
           {searchState === 'completed' && (
             <div className="results-table-container search-track__results">
-              <div style={{ padding: '20px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ padding: '20px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
                 <h4 style={{ fontWeight: 600, fontSize: '1.05rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
                   {`New leads found (${scrapedLeads.length})`}
                 </h4>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  {`Added to ${segmentLabel} outreach drafts`}
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                  <MatchTierSummary counts={countMatchTiers(scrapedLeads)} />
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    {`Added to ${segmentLabel} outreach drafts`}
+                  </span>
+                </div>
               </div>
 
               {scrapedLeads.length === 0 ? (
@@ -716,6 +729,7 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
                     <thead>
                       <tr>
                         <th>Name</th>
+                        <th>Priority</th>
                         <th>Headline</th>
                         <th>Why they fit</th>
                         <th>Location</th>
@@ -726,6 +740,14 @@ export default function IndividualSearchPanel({ onComplete, activeSegment = 'ava
                       {scrapedLeads.map((lead, idx) => (
                         <tr key={idx}>
                           <td style={{ fontWeight: 600 }}>{lead.name}</td>
+                          <td>
+                            <MatchTierBadge label={resolveLeadMatchLabel(lead)} />
+                            {lead.match_reason ? (
+                              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '4px', maxWidth: '140px' }}>
+                                {lead.match_reason}
+                              </div>
+                            ) : null}
+                          </td>
                           <td style={{ color: 'var(--text-secondary)' }}>{lead.headline || '—'}</td>
                           <td style={{ maxWidth: '260px' }}>
                             {lead.fit_evidence ? (

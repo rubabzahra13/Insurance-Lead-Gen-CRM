@@ -388,6 +388,8 @@ def persist_avatar12_lead(
         lead.location = location
         lead.search_prompt = search_prompt
         lead.source_snapshot = source_snapshot
+        if linkedin_url and str(linkedin_url).strip():
+            lead.linkedin_url = str(linkedin_url).strip()
         if source_query is not None:
             lead.source_query = source_query
         if fit_evidence is not None:
