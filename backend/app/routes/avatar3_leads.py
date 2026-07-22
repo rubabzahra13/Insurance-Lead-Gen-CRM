@@ -63,6 +63,10 @@ class NoteCreate(BaseModel):
     author: str
 
 
+class RevertStageRequest(BaseModel):
+    event_id: str
+
+
 def _lead_payload(lead: BusinessLead) -> dict:
     return {
         "id": str(lead.id),
@@ -93,6 +97,8 @@ def _event_payload(event: PipelineEvent) -> dict:
         "from_stage": event.from_stage.value if event.from_stage else None,
         "to_stage": event.to_stage.value if event.to_stage else None,
         "description": event.description,
+        "changed_by": event.changed_by,
+        "note_id": str(event.note_id) if event.note_id else None,
         "created_at": event.created_at,
     }
 
@@ -107,20 +113,78 @@ def _note_payload(note: BusinessNote) -> dict:
     }
 
 
-def update_stage_in_db(*, lead: BusinessLead, next_stage: PipelineStage, db: Session, description: str) -> None:
+def update_stage_in_db(
+    *,
+    lead: BusinessLead,
+    next_stage: PipelineStage,
+    db: Session,
+    description: str,
+    changed_by: str = "admin",
+    note_id: uuid.UUID | None = None,
+) -> PipelineEvent:
     previous = lead.pipeline_stage
     lead.pipeline_stage = next_stage
-    db.add(
-        PipelineEvent(
-            business_lead_id=lead.id,
-            event_type=PipelineEventType.stage_change,
-            from_stage=previous,
-            to_stage=next_stage,
-            description=description,
-        )
+    event = PipelineEvent(
+        business_lead_id=lead.id,
+        event_type=PipelineEventType.stage_change,
+        from_stage=previous,
+        to_stage=next_stage,
+        description=description,
+        changed_by=changed_by,
+        note_id=note_id,
     )
+    db.add(event)
     db.commit()
     db.refresh(lead)
+    db.refresh(event)
+    return event
+
+
+def _lead_detail_payload(lead: BusinessLead) -> dict:
+    return {
+        **_lead_payload(lead),
+        "notes": [_note_payload(note) for note in lead.notes],
+        "interactions": [
+            {
+                "id": str(item.id),
+                "business_lead_id": str(item.business_lead_id),
+                "channel": item.channel.value if item.channel else None,
+                "direction": item.direction.value if item.direction else None,
+                "summary": item.summary,
+                "created_at": item.created_at,
+            }
+            for item in lead.interactions
+        ],
+        "follow_up_plans": [
+            {
+                "id": str(item.id),
+                "business_lead_id": str(item.business_lead_id),
+                "note_id": str(item.note_id) if item.note_id else None,
+                "recommended_action": item.recommended_action,
+                "suggested_channel": item.suggested_channel,
+                "reasoning": item.reasoning,
+                "created_at": item.created_at,
+            }
+            for item in lead.follow_up_plans
+        ],
+        "events": sorted(
+            [_event_payload(event) for event in lead.pipeline_events],
+            key=lambda item: item["created_at"],
+        ),
+    }
+
+
+def _load_lead_detail(lead_id: uuid.UUID, db: Session) -> BusinessLead | None:
+    return db.scalar(
+        select(BusinessLead)
+        .where(BusinessLead.id == lead_id)
+        .options(
+            selectinload(BusinessLead.notes),
+            selectinload(BusinessLead.interactions),
+            selectinload(BusinessLead.follow_up_plans),
+            selectinload(BusinessLead.pipeline_events),
+        )
+    )
 
 
 @router.post("/leads")
@@ -151,6 +215,7 @@ def create_lead(payload: LeadCreate, db: Session = Depends(get_db)):
                 from_stage=None,
                 to_stage=lead.pipeline_stage,
                 description=f"Lead created at stage {lead.pipeline_stage.value}",
+                changed_by="system",
             )
         )
         db.commit()
@@ -196,9 +261,55 @@ def update_stage(lead_id: uuid.UUID, payload: LeadStageUpdate, db: Session = Dep
         lead=lead,
         next_stage=next_stage,
         db=db,
-        description=f"Stage changed from {lead.pipeline_stage.value} to {next_stage.value}",
+        description=f"Stage changed by admin from {lead.pipeline_stage.value} to {next_stage.value}",
+        changed_by="admin",
     )
     return _lead_payload(lead)
+
+
+@router.post("/leads/{lead_id}/stage/revert")
+def revert_ai_stage(lead_id: uuid.UUID, payload: RevertStageRequest, db: Session = Depends(get_db)):
+    lead = db.get(BusinessLead, lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    try:
+        event_id = uuid.UUID(payload.event_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid event id") from exc
+
+    event = db.get(PipelineEvent, event_id)
+    if not event or event.business_lead_id != lead.id:
+        raise HTTPException(status_code=404, detail="Stage change event not found")
+    if event.event_type != PipelineEventType.stage_change:
+        raise HTTPException(status_code=400, detail="Only stage change events can be reverted")
+
+    is_ai = event.changed_by == "ai" or "reclassification agent" in event.description.lower()
+    if not is_ai:
+        raise HTTPException(status_code=400, detail="Only AI stage changes can be reverted from activity")
+    if not event.from_stage or not event.to_stage:
+        raise HTTPException(status_code=400, detail="This stage change cannot be reverted")
+    if lead.pipeline_stage != event.to_stage:
+        raise HTTPException(
+            status_code=409,
+            detail="Lead stage has changed since this AI update. Revert is only available for the current stage.",
+        )
+
+    revert_to = event.from_stage
+    update_stage_in_db(
+        lead=lead,
+        next_stage=revert_to,
+        db=db,
+        description=(
+            f"Stage reverted by admin from {event.to_stage.value} to {revert_to.value}"
+        ),
+        changed_by="admin",
+        note_id=None,
+    )
+    lead = _load_lead_detail(lead.id, db)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return _lead_detail_payload(lead)
 
 
 @router.delete("/leads/{lead_id}")
@@ -213,53 +324,10 @@ def delete_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
 
 @router.get("/leads/{lead_id}")
 def get_lead(lead_id: uuid.UUID, db: Session = Depends(get_db)):
-    lead = db.scalar(
-        select(BusinessLead)
-        .where(BusinessLead.id == lead_id)
-        .options(
-            selectinload(BusinessLead.notes),
-            selectinload(BusinessLead.interactions),
-            selectinload(BusinessLead.follow_up_plans),
-            selectinload(BusinessLead.pipeline_events),
-        )
-    )
+    lead = _load_lead_detail(lead_id, db)
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
-
-    return {
-        **_lead_payload(lead),
-        "notes": [
-            _note_payload(note)
-            for note in lead.notes
-        ],
-        "interactions": [
-            {
-                "id": str(item.id),
-                "business_lead_id": str(item.business_lead_id),
-                "channel": item.channel.value if item.channel else None,
-                "direction": item.direction.value if item.direction else None,
-                "summary": item.summary,
-                "created_at": item.created_at,
-            }
-            for item in lead.interactions
-        ],
-        "follow_up_plans": [
-            {
-                "id": str(item.id),
-                "business_lead_id": str(item.business_lead_id),
-                "note_id": str(item.note_id) if item.note_id else None,
-                "recommended_action": item.recommended_action,
-                "suggested_channel": item.suggested_channel,
-                "reasoning": item.reasoning,
-                "created_at": item.created_at,
-            }
-            for item in lead.follow_up_plans
-        ],
-        "events": sorted(
-            [_event_payload(event) for event in lead.pipeline_events],
-            key=lambda item: item["created_at"],
-        ),
-    }
+    return _lead_detail_payload(lead)
 
 
 @router.get("/leads/{lead_id}/image")
@@ -283,10 +351,14 @@ def create_note(lead_id: uuid.UUID, payload: NoteCreate, db: Session = Depends(g
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
 
+    author = (payload.author or "admin").strip() or "admin"
+    if author.lower() == "peter":
+        author = "admin"
+
     note = BusinessNote(
         business_lead_id=lead.id,
         content=payload.content,
-        author=payload.author,
+        author=author,
     )
     db.add(note)
     db.flush()
@@ -296,7 +368,7 @@ def create_note(lead_id: uuid.UUID, payload: NoteCreate, db: Session = Depends(g
             event_type=PipelineEventType.note_added,
             from_stage=None,
             to_stage=None,
-            description=f"Note added by {payload.author}",
+            description=f"Note added by {author}",
         )
     )
     db.commit()
@@ -321,7 +393,9 @@ def create_note(lead_id: uuid.UUID, payload: NoteCreate, db: Session = Depends(g
                     lead=lead,
                     next_stage=next_stage,
                     db=db,
-                    description=f"Stage changed by reclassification agent from {previous_stage.value} to {next_stage.value}",
+                    description=f"Stage changed by AI from {previous_stage.value} to {next_stage.value}",
+                    changed_by="ai",
+                    note_id=note.id,
                 )
                 db.add(
                     PipelineEvent(
@@ -407,49 +481,8 @@ def create_note(lead_id: uuid.UUID, payload: NoteCreate, db: Session = Depends(g
     except Exception:
         logger.exception("Follow-up planning failed for lead %s", lead.id)
 
-    # Re-fetch lead with all relationships so the frontend gets the full updated
-    # state (new stage, follow-up plans, events) in a single round-trip.
-    lead = db.scalar(
-        select(BusinessLead)
-        .where(BusinessLead.id == lead.id)
-        .options(
-            selectinload(BusinessLead.notes),
-            selectinload(BusinessLead.interactions),
-            selectinload(BusinessLead.follow_up_plans),
-            selectinload(BusinessLead.pipeline_events),
-        )
-    )
-    return {
-        **_lead_payload(lead),
-        "notes": [_note_payload(n) for n in lead.notes],
-        "interactions": [
-            {
-                "id": str(item.id),
-                "business_lead_id": str(item.business_lead_id),
-                "channel": item.channel.value if item.channel else None,
-                "direction": item.direction.value if item.direction else None,
-                "summary": item.summary,
-                "created_at": item.created_at,
-            }
-            for item in lead.interactions
-        ],
-        "follow_up_plans": [
-            {
-                "id": str(item.id),
-                "business_lead_id": str(item.business_lead_id),
-                "note_id": str(item.note_id) if item.note_id else None,
-                "recommended_action": item.recommended_action,
-                "suggested_channel": item.suggested_channel,
-                "reasoning": item.reasoning,
-                "created_at": item.created_at,
-            }
-            for item in lead.follow_up_plans
-        ],
-        "events": sorted(
-            [_event_payload(event) for event in lead.pipeline_events],
-            key=lambda item: item["created_at"],
-        ),
-    }
+    lead = _load_lead_detail(lead.id, db)
+    return _lead_detail_payload(lead)
 
 
 @router.post("/leads/{lead_id}/enrich")

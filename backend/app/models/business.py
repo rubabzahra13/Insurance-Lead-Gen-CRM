@@ -142,7 +142,12 @@ class PipelineEvent(Base):
         Enum(PipelineStage, name="pipeline_stage", native_enum=True), nullable=True
     )
     description: Mapped[str] = mapped_column(Text, nullable=False)
+    changed_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    note_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("business_note.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[str] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     business_lead = relationship("BusinessLead", back_populates="pipeline_events")
+    note = relationship("BusinessNote")
 

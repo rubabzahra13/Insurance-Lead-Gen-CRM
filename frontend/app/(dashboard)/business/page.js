@@ -19,7 +19,7 @@ import {
   Loader2, AlertTriangle, CheckCircle2, 
   KanbanSquare, Sliders, X, Building2,
   ArrowRight, Table2, ChevronLeft, ChevronRight,
-  Check, AlertCircle, Trash2
+  Check, AlertCircle, Trash2, RotateCcw
 } from 'lucide-react';
 import MenuSelect from '../../../components/MenuSelect';
 import SearchableFilterSelect from '../../../components/SearchableFilterSelect';
@@ -114,27 +114,135 @@ function humanizeOpenStatus(status) {
   return raw.replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
 }
 
+function stageLabel(stageId) {
+  if (!stageId) return 'Unknown';
+  return STAGES.find((s) => s.id === stageId)?.label
+    || String(stageId).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function isAdminActor(value) {
+  const key = String(value || '').toLowerCase();
+  return key === 'admin' || key === 'user' || key === 'peter';
+}
+
+function isAdminRevert(event) {
+  if (!event) return false;
+  const desc = String(event.description || '').toLowerCase();
+  if (desc.includes('stage reverted by admin') || desc.includes('reverted ai stage change')) {
+    return true;
+  }
+  return isAdminActor(event.changed_by) && desc.includes('revert');
+}
+
+function isAdminStageChange(event) {
+  if (!event || isAiStageChange(event) || isAdminRevert(event)) return false;
+  if (isAdminActor(event.changed_by)) return true;
+  const desc = String(event.description || '').toLowerCase();
+  return desc.includes('changed by admin') || desc.includes('changed manually');
+}
+
+function isAiStageChange(event) {
+  if (!event) return false;
+  if (event.changed_by === 'ai') return true;
+  return String(event.description || '').toLowerCase().includes('reclassification agent');
+}
+
+function stageChangeKind(event) {
+  if (isAdminRevert(event)) return 'Stage reverted by admin';
+  if (isAiStageChange(event)) return 'Stage changed by AI';
+  if (isAdminStageChange(event)) return 'Stage changed by admin';
+  return 'Stage change';
+}
+
+function findStageChangeNote(event, notes = []) {
+  if (event?.note_id) {
+    const linked = notes.find((note) => String(note.id) === String(event.note_id));
+    if (linked) return linked;
+  }
+  if (!isAiStageChange(event)) return null;
+
+  const eventTime = new Date(event.created_at).getTime();
+  if (Number.isNaN(eventTime)) return null;
+
+  let best = null;
+  let bestDelta = Infinity;
+  for (const note of notes) {
+    const noteTime = new Date(note.created_at).getTime();
+    if (Number.isNaN(noteTime)) continue;
+    const delta = eventTime - noteTime;
+    if (delta >= 0 && delta < bestDelta && delta <= 120_000) {
+      best = note;
+      bestDelta = delta;
+    }
+  }
+  return best;
+}
+
 function buildLeadActivity(lead) {
+  const notes = lead?.notes || [];
+  const currentStage = lead?.pipeline_stage;
   const items = [];
-  for (const note of lead?.notes || []) {
+
+  for (const note of notes) {
+    const author = isAdminActor(note.author) ? 'admin' : (note.author || 'admin');
     items.push({
       id: `note-${note.id}`,
       at: note.created_at,
-      kind: 'Note',
+      kind: `Note by ${author}`,
+      eventType: 'note',
       body: note.content,
     });
   }
+
   for (const event of lead?.events || []) {
     if (event.event_type === 'follow_up_generated') continue;
+    if (event.event_type === 'note_added') continue;
+
+    if (event.event_type === 'stage_change') {
+      const isAi = isAiStageChange(event);
+      const isRevert = isAdminRevert(event);
+      const triggerNote = isAi && !isRevert ? findStageChangeNote(event, notes) : null;
+      const fromStage = event.from_stage;
+      const toStage = event.to_stage;
+      const canRevert = Boolean(
+        isAi
+        && !isRevert
+        && fromStage
+        && toStage
+        && currentStage === toStage,
+      );
+
+      items.push({
+        id: `event-${event.id}`,
+        at: event.created_at,
+        kind: stageChangeKind(event),
+        eventType: 'stage_change',
+        eventId: event.id,
+        isAi,
+        isRevert,
+        fromStage,
+        toStage,
+        noteId: triggerNote?.id || (isAi && !isRevert ? event.note_id : null) || null,
+        noteContent: triggerNote?.content || null,
+        body: fromStage && toStage
+          ? `${stageLabel(fromStage)} → ${stageLabel(toStage)}`
+          : event.description,
+        canRevert,
+      });
+      continue;
+    }
+
     items.push({
       id: `event-${event.id}`,
       at: event.created_at,
-      kind: event.event_type === 'stage_change' ? 'Stage change' : 'Update',
+      kind: 'Update',
+      eventType: event.event_type,
       body: event.description,
     });
   }
+
   return items
-    .filter((item) => item.body)
+    .filter((item) => item.body || item.noteContent)
     .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
 }
 
@@ -173,6 +281,7 @@ function BusinessWorkspaceContent() {
   const [detailsError, setDetailsError] = useState(false);
   const [newNoteContent, setNewNoteContent] = useState('');
   const [noteSaving, setNoteSaving] = useState(false);
+  const [revertingEventId, setRevertingEventId] = useState(null);
 
   // Toast notification
   const [toast, setToast] = useState(null); // { message: string, type: 'success' | 'error' }
@@ -882,7 +991,7 @@ function BusinessWorkspaceContent() {
       const res = await fetch(`${apiBaseUrl}/api/avatar3/leads/${selectedLeadId}/notes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: newNoteContent, author: 'Peter' })
+        body: JSON.stringify({ content: newNoteContent, author: 'admin' })
       });
 
       if (!res.ok) throw new Error('Failed to save note');
@@ -919,6 +1028,46 @@ function BusinessWorkspaceContent() {
       showToast('Failed to save note. Check connection.', 'error');
     } finally {
       setNoteSaving(false);
+    }
+  };
+
+  const handleRevertAiStage = async (eventId, fromStage) => {
+    if (!selectedLeadId || !eventId || !fromStage) return;
+
+    setRevertingEventId(eventId);
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/avatar3/leads/${selectedLeadId}/stage/revert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event_id: eventId }),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.detail || 'Failed to revert stage');
+      }
+
+      const updatedLead = await res.json();
+      setLeadDetails(updatedLead);
+      syncLeadDetailCache(selectedLeadId, updatedLead);
+      invalidateApiCache(avatar3LeadDetailKey(selectedLeadId));
+
+      setLeads((prev) => {
+        const next = prev.map((lead) => (
+          String(lead.id) === String(selectedLeadId)
+            ? { ...lead, pipeline_stage: updatedLead.pipeline_stage }
+            : lead
+        ));
+        syncLeadsCache(next);
+        return next;
+      });
+
+      showToast(`Admin reverted stage to ${stageLabel(fromStage)}`, 'success');
+    } catch (err) {
+      console.error(err);
+      showToast(err.message || 'Failed to revert stage.', 'error');
+    } finally {
+      setRevertingEventId(null);
     }
   };
 
@@ -1948,14 +2097,53 @@ function BusinessWorkspaceContent() {
                         ) : (
                           <ul className="biz-detail__activity-list">
                             {activity.map((item) => (
-                              <li key={item.id} className="biz-detail__activity-item">
+                              <li
+                                key={item.id}
+                                className={`biz-detail__activity-item${
+                                  item.isAi ? ' biz-detail__activity-item--ai' : ''
+                                }${item.isRevert ? ' biz-detail__activity-item--admin' : ''}`}
+                              >
                                 <div className="biz-detail__activity-top">
-                                  <span className="biz-detail__activity-kind">{item.kind}</span>
+                                  <span
+                                    className={`biz-detail__activity-kind${
+                                      item.isAi ? ' biz-detail__activity-kind--ai' : ''
+                                    }${item.isRevert ? ' biz-detail__activity-kind--admin' : ''}`}
+                                  >
+                                    {item.kind}
+                                  </span>
                                   <time className="biz-detail__activity-time" dateTime={item.at}>
                                     {formatActivityWhen(item.at)}
                                   </time>
                                 </div>
-                                <p className="biz-detail__activity-body">{item.body}</p>
+                                {item.body && (
+                                  <p className="biz-detail__activity-body">{item.body}</p>
+                                )}
+                                {item.noteContent && (
+                                  <blockquote className="biz-detail__activity-note">
+                                    <span className="biz-detail__activity-note-label">Based on note</span>
+                                    {item.noteContent}
+                                  </blockquote>
+                                )}
+                                {item.canRevert && (
+                                  <button
+                                    type="button"
+                                    className="biz-detail__activity-revert"
+                                    onClick={() => handleRevertAiStage(item.eventId, item.fromStage)}
+                                    disabled={revertingEventId === item.eventId}
+                                  >
+                                    {revertingEventId === item.eventId ? (
+                                      <>
+                                        <Loader2 size={12} className="animate-spin" />
+                                        Reverting…
+                                      </>
+                                    ) : (
+                                      <>
+                                        <RotateCcw size={12} />
+                                        Revert to {stageLabel(item.fromStage)}
+                                      </>
+                                    )}
+                                  </button>
+                                )}
                               </li>
                             ))}
                           </ul>
